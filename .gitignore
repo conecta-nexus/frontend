@@ -22,3 +22,8 @@ logs
 .env
 .env.*
 !.env.example
+
+# Course specifications and reference PDFs
+.pdf/
+*.pdf
+
