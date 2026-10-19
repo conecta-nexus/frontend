@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-19T19:05:45Z",
+  "title": "Design System: Conecta Nexus",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "UFPS Crimson Red",
+        "canonical": "oklch(48.2% 0.22 26.5)",
+        "tonalRamp": ["#300005", "#52000a", "#6a000d", "#850010", "#a30014", "#bc0017", "#d95c4c", "#f3c5ba"]
+      },
+      "neutral-bg": {
+        "role": "neutral",
+        "displayName": "Cream Canvas",
+        "canonical": "oklch(96.2% 0.01 65)",
+        "tonalRamp": ["#1c1a18", "#383431", "#6a645f", "#a39c94", "#d8cec4", "#efe9e3", "#f7f2ee", "#ffffff"]
+      },
+      "accent-coral": {
+        "role": "secondary",
+        "displayName": "Pastel Coral",
+        "canonical": "oklch(84.5% 0.06 35)",
+        "tonalRamp": ["#4a1c14", "#782e21", "#ad4330", "#d66c56", "#e79a8a", "#f3c5ba", "#fbe5e1", "#fdf2f0"]
+      },
+      "accent-blue": {
+        "role": "secondary",
+        "displayName": "Pastel Ice Blue",
+        "canonical": "oklch(94.2% 0.03 260)",
+        "tonalRamp": ["#152238", "#243a5e", "#3a5b8f", "#5c82be", "#9bb3e3", "#c6d6f5", "#e8effd", "#f5f8ff"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display Hero", "purpose": "Hero headlines and high-impact portal title banners." },
+      "headline": { "displayName": "Section Headline", "purpose": "Section dividers and 50/50 authentication headings." },
+      "title": { "displayName": "Card & Tab Title", "purpose": "Interactive tabs, challenge titles, and modal headers." },
+      "body": { "displayName": "Body & Description", "purpose": "Challenge specifications, instructions, and legal text." },
+      "label": { "displayName": "Label & Action", "purpose": "Form field labels, button actions, and ticker tags." }
+    },
+    "shadows": [
+      { "name": "shadow-hard-sm", "value": "3px 3px 0px 0px rgba(0,0,0,1)", "purpose": "Stickers, pills, and small badges." },
+      { "name": "shadow-hard-md", "value": "4px 4px 0px 0px rgba(0,0,0,1)", "purpose": "Feature cards, information containers, and primary buttons." },
+      { "name": "shadow-hard-lg", "value": "6px 6px 0px 0px rgba(0,0,0,1)", "purpose": "Form blocks and major landing focal points." }
+    ],
+    "motion": [
+      { "name": "float-gentle", "value": "5.5s ease-in-out infinite", "purpose": "Floating sticker physics." },
+      { "name": "twinkle-star", "value": "2.8s ease-in-out infinite", "purpose": "Rotating sparkling star badges." },
+      { "name": "terminal-blink", "value": "1.2s step-end infinite", "purpose": "Code prompt cursor blink." }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "640px" },
+      { "name": "md", "value": "768px" },
+      { "name": "lg", "value": "1024px" },
+      { "name": "xl", "value": "1280px" },
+      { "name": "2xl", "value": "1536px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Action Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "High-impact institutional submission and call-to-action button.",
+      "html": "<button class=\"ds-btn-primary\">POSTULAR RETO</button>",
+      "css": ".ds-btn-primary { background: #bc0017; color: #ffffff; padding: 14px 28px; font-family: 'Uncut Sans', sans-serif; font-size: 14px; font-weight: 900; letter-spacing: 0.05em; text-transform: uppercase; border: 2px solid #191c21; border-radius: 16px; box-shadow: 4px 4px 0px 0px rgba(0,0,0,1); cursor: pointer; transition: transform 0.2s, box-shadow 0.2s; } .ds-btn-primary:hover { background: #a30014; transform: translate(-2px, -2px); box-shadow: 6px 6px 0px 0px rgba(0,0,0,1); } .ds-btn-primary:active { transform: translate(2px, 2px); box-shadow: 2px 2px 0px 0px rgba(0,0,0,1); }"
+    },
+    {
+      "name": "Student Role Tab",
+      "kind": "custom",
+      "refersTo": "tab-student",
+      "description": "Active role selection trigger for UFPS Systems Engineering students.",
+      "html": "<button class=\"ds-tab-student\">🎓 Estudiante UFPS</button>",
+      "css": ".ds-tab-student { background: #e8effd; color: #191c21; padding: 12px 16px; font-family: 'Uncut Sans', sans-serif; font-size: 14px; font-weight: 900; border: 2px solid #191c21; border-radius: 12px; box-shadow: 3px 3px 0px 0px rgba(0,0,0,1); cursor: pointer; }"
+    },
+    {
+      "name": "Company Role Tab",
+      "kind": "custom",
+      "refersTo": "tab-company",
+      "description": "Active role selection trigger for regional businesses and PYMEs.",
+      "html": "<button class=\"ds-tab-company\">🏢 Empresa o PYME</button>",
+      "css": ".ds-tab-company { background: #f3c5ba; color: #191c21; padding: 12px 16px; font-family: 'Uncut Sans', sans-serif; font-size: 14px; font-weight: 900; border: 2px solid #191c21; border-radius: 12px; box-shadow: 3px 3px 0px 0px rgba(0,0,0,1); cursor: pointer; }"
+    },
+    {
+      "name": "Tactile Input Field",
+      "kind": "input",
+      "refersTo": "input-field",
+      "description": "Input field with ink stroke border and focused institutional outline.",
+      "html": "<input type=\"text\" class=\"ds-input-field\" placeholder=\"nombre.apellido@ufps.edu.co\" />",
+      "css": ".ds-input-field { background: #f7f2ee; color: #191c21; padding: 12px 16px; font-family: 'Uncut Sans', sans-serif; font-size: 15px; font-weight: 600; border: 2px solid #191c21; border-radius: 16px; width: 100%; outline: none; } .ds-input-field:focus { border-color: #bc0017; box-shadow: 0 0 0 2px rgba(188, 0, 23, 0.25); }"
+    },
+    {
+      "name": "Neo-Brutalist Feature Card",
+      "kind": "card",
+      "refersTo": "card-container",
+      "description": "Tactile content card with solid ink borders and hard-drop shadow.",
+      "html": "<div class=\"ds-card\"><h3 class=\"ds-card-title\">Práctica Curricular</h3><p class=\"ds-card-desc\">Semestres 6° a 10°. Proyectos reales de la industria con portafolio verificado.</p></div>",
+      "css": ".ds-card { background: #ffffff; color: #191c21; padding: 20px; font-family: 'Uncut Sans', sans-serif; border: 2px solid #191c21; border-radius: 16px; box-shadow: 4px 4px 0px 0px rgba(0,0,0,1); } .ds-card-title { font-size: 16px; font-weight: 900; text-transform: uppercase; margin: 0 0 8px 0; } .ds-card-desc { font-size: 14px; font-weight: 500; color: #595d62; line-height: 1.5; margin: 0; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Academic Launchpad",
+    "overview": "Conecta Nexus marries the institutional authority of Universidad Francisco de Paula Santander with a fresh, tactile, Meeko-inspired neo-brutalist aesthetic. It breaks cleanly away from sterile, bureaucratic academic administration systems, presenting an energetic, high-contrast digital campus that feels as dynamic as a modern venture lab or creative studio.",
+    "keyCharacteristics": [
+      "Tactile Neo-Brutalism: Solid 2px ink borders with flat, unapologetic hard-drop shadows (3px to 6px offsets with zero blur radius).",
+      "Institutional Anchor: Official UFPS Crimson Red (#bc0017) as the single high-potency accent on brand marks, primary actions, and critical state indicators.",
+      "Harmonious Pastel Accents: Soft coral, ice blue, mint, and peach surfaces that soften industrial lines and delineate roles.",
+      "Uncompromising Legibility: Bold geometry powered by self-hosted Uncut Sans across display headings, interactive tabs, form controls, and body copy."
+    ],
+    "rules": [
+      {
+        "name": "The 10% Crimson Rule",
+        "body": "Institutional Red (#bc0017) is an intentional lightning rod. It covers ≤10% of any viewport so that primary calls-to-action and institutional badges remain unmistakable.",
+        "section": "colors"
+      },
+      {
+        "name": "The Role Chromatic Anchor Rule",
+        "body": "Estudiantes UFPS always associate with Ice Blue (#e8effd); Empresas / PYMEs always associate with Pastel Coral (#f3c5ba). This chromatic distinction must remain invariant across authentication, dashboard views, and challenge applications.",
+        "section": "colors"
+      },
+      {
+        "name": "The Hard-Case Rule",
+        "body": "Form labels, role badges, and primary action triggers use bold uppercase text with positive tracking (letter-spacing: 0.05em) to eliminate ambiguity.",
+        "section": "typography"
+      },
+      {
+        "name": "The Zero-Blur Doctrine",
+        "body": "Drop shadows have 0px blur radius at all times. Depth is conveyed exclusively through crisp offset geometry.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do use exact 2px dark ink borders (#191c21 or #262626) on all cards, inputs, and interactive surfaces.",
+      "Do keep drop shadows solid with 0px blur (box-shadow: 4px 4px 0px 0px rgba(0,0,0,1)).",
+      "Do maintain the 50/50 split on desktop authentication pages to preserve visual balance.",
+      "Do enforce institutional student domain validation (@ufps.edu.co) and corporate NIT formats.",
+      "Do keep all end-user UI copy strictly in Spanish while preserving English in code symbols."
+    ],
+    "donts": [
+      "Don't use faint pastel gradients or blurry shadows (box-shadow: 0 10px 25px rgba(...)) that dilute the neo-brutalist character.",
+      "Don't use generic stock photos or corporate 'handshake' clipart; rely on technical doodles, authentic stickers, and bold typography.",
+      "Don't use UFPS Crimson Red (#bc0017) as full-page background washes; its rarity preserves its potency.",
+      "Don't bypass Colombian Habeas Data (Ley 1581) consent dialogs on student or company registration flows."
+    ]
+  }
+}
