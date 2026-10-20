@@ -8,7 +8,8 @@ RUN corepack enable && corepack prepare pnpm@latest --activate
 # Environment defaults for containerized Nuxt
 ENV HOST=0.0.0.0 \
     PORT=3000 \
-    NODE_ENV=development
+    NODE_ENV=development \
+    NUXT_PUBLIC_API_BASE=http://localhost:8080/api/v1
 
 # Copy package manifests for dependency layer caching
 COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml* ./
