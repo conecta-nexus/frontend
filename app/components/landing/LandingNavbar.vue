@@ -15,6 +15,7 @@ function toggleTheme() {
 }
 
 const route = useRoute()
+const { isAuthenticated } = useAuth()
 
 const navLinks = [
   { name: 'Inicio', href: '/' },
@@ -24,6 +25,9 @@ const navLinks = [
 ]
 
 const authCta = computed(() => {
+  if (isAuthenticated.value) {
+    return { name: 'Mi Perfil', href: '/me' }
+  }
   if (route.path === '/auth/login') {
     return { name: 'Registrarse', href: '/auth/register' }
   }

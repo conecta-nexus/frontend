@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { extractApiErrorMessage } from '~/utils/errors'
 
 useHead({
   title: 'Iniciar Sesión | Conecta Nexus UFPS',
@@ -14,6 +15,9 @@ useHead({
 type UserRole = 'student' | 'company'
 const activeRole = ref<UserRole>('student')
 
+const route = useRoute()
+const { login } = useAuth()
+
 // Form states
 const email = ref('')
 const password = ref('')
@@ -23,6 +27,23 @@ const showPassword = ref(false)
 const isSubmitting = ref(false)
 const loginSuccess = ref(false)
 const errorMessage = ref('')
+const showToast = ref(false)
+let toastTimer: ReturnType<typeof setTimeout> | null = null
+
+function triggerError(msg: string) {
+  errorMessage.value = msg
+  showToast.value = true
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => {
+    showToast.value = false
+  }, 7000)
+}
+
+function dismissError() {
+  errorMessage.value = ''
+  showToast.value = false
+  if (toastTimer) clearTimeout(toastTimer)
+}
 
 const isStudentEmailValid = computed(() => {
   if (activeRole.value !== 'student' || !email.value) return true
@@ -31,35 +52,85 @@ const isStudentEmailValid = computed(() => {
 
 function switchRole(role: UserRole) {
   activeRole.value = role
-  errorMessage.value = ''
+  dismissError()
   loginSuccess.value = false
   email.value = ''
   password.value = ''
 }
 
-function handleLogin() {
-  errorMessage.value = ''
+async function handleLogin() {
+  dismissError()
 
   if (!email.value || !password.value) {
-    errorMessage.value = 'Por favor completa todos los campos requeridos.'
+    triggerError('Por favor completa todos los campos requeridos.')
     return
   }
 
   if (activeRole.value === 'student' && !isStudentEmailValid.value) {
-    errorMessage.value = 'El correo institucional debe terminar en @ufps.edu.co'
+    triggerError('El correo institucional debe terminar en @ufps.edu.co')
     return
   }
 
   isSubmitting.value = true
-  setTimeout(() => {
-    isSubmitting.value = false
+
+  try {
+    await login({
+      email: email.value.trim().toLowerCase(),
+      password: password.value,
+    })
+
     loginSuccess.value = true
-  }, 700)
+
+    // Give visual feedback and navigate to /me landing page
+    setTimeout(async () => {
+      const target = (route.query.redirect as string) || '/me'
+      await navigateTo(target)
+    }, 600)
+  } catch (err: unknown) {
+    triggerError(extractApiErrorMessage(err, 'No fue posible iniciar sesión. Verifica tus credenciales e inténtalo nuevamente.'))
+  } finally {
+    isSubmitting.value = false
+  }
 }
 </script>
 
 <template>
-  <div class="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-8 flex flex-col justify-center min-h-[calc(100vh-140px)]">
+  <div class="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-8 flex flex-col justify-center min-h-[calc(100vh-140px)] relative">
+    <!-- Floating Sonner-Style Toast Notification -->
+    <Transition
+      enter-active-class="transform ease-out duration-300 transition"
+      enter-from-class="translate-y-[-20px] opacity-0 sm:translate-y-0 sm:translate-x-4"
+      enter-to-class="translate-y-0 opacity-100 sm:translate-x-0"
+      leave-active-class="transition ease-in duration-200"
+      leave-from-class="opacity-100"
+      leave-to-class="opacity-0"
+    >
+      <div
+        v-if="showToast && errorMessage"
+        class="fixed top-6 right-4 sm:right-8 z-50 max-w-md w-full bg-surface border-2 border-neutral-900 dark:border-neutral-700 rounded-2xl p-4 shadow-[6px_6px_0px_0px_rgba(239,68,68,1)] flex items-start gap-3"
+        role="alert"
+      >
+        <div class="w-8 h-8 rounded-xl bg-red-500 text-white flex items-center justify-center font-black shrink-0 border border-neutral-900 shadow-[1px_1px_0px_0px_rgba(0,0,0,1)]">
+          ✕
+        </div>
+        <div class="flex-1 text-xs sm:text-sm">
+          <div class="font-black text-text-main flex items-center justify-between">
+            <span>Atención en el Ingreso</span>
+            <button
+              type="button"
+              class="text-text-muted hover:text-text-main text-base font-bold ml-2 focus-visible:outline-none"
+              aria-label="Cerrar notificación"
+              @click="dismissError"
+            >
+              ✕
+            </button>
+          </div>
+          <p class="text-text-muted font-semibold mt-1">
+            {{ errorMessage }}
+          </p>
+        </div>
+      </div>
+    </Transition>
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-16 items-center">
       <!-- Izquierda: Titular y Mensaje de Gran Presencia -->
       <div class="space-y-6">
@@ -166,12 +237,22 @@ function handleLogin() {
           <div
             v-if="errorMessage"
             role="alert"
-            class="mb-5 p-3.5 rounded-xl bg-red-100 dark:bg-red-950/40 border-2 border-red-500 text-red-900 dark:text-red-200 text-sm font-bold flex items-center gap-2.5"
+            class="mb-5 p-4 rounded-2xl bg-red-100 dark:bg-red-950/40 border-2 border-red-500 text-red-900 dark:text-red-200 text-sm font-bold shadow-[3px_3px_0px_0px_rgba(239,68,68,0.5)] flex items-start justify-between gap-2.5"
           >
-            <svg class="w-5 h-5 text-red-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <span>{{ errorMessage }}</span>
+            <div class="flex items-center gap-2.5">
+              <svg class="w-5 h-5 text-red-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span class="font-black">{{ errorMessage }}</span>
+            </div>
+            <button
+              type="button"
+              class="text-red-700 hover:text-red-900 dark:text-red-300 font-black text-sm ml-2"
+              aria-label="Cerrar alerta"
+              @click="dismissError"
+            >
+              ✕
+            </button>
           </div>
 
           <div
