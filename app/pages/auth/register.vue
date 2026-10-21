@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
+import { extractApiErrorMessage } from '~/utils/errors'
+import { isValidNit, normalizeNit } from '~/utils/nit'
 
 useHead({
   title: 'Registro de Cuenta | Conecta Nexus UFPS',
@@ -13,6 +15,8 @@ useHead({
 
 type UserRole = 'student' | 'company'
 const activeRole = ref<UserRole>('student')
+
+const { registerStudent, registerCompany } = useAuth()
 
 // Student Form fields
 const studentName = ref('')
@@ -41,64 +45,203 @@ const showCompanyPassword = ref(false)
 const isSubmitting = ref(false)
 const registerSuccess = ref(false)
 const errorMessage = ref('')
+const showToast = ref(false)
 const showPrivacyModal = ref(false)
+let toastTimer: ReturnType<typeof setTimeout> | null = null
+
+const isAlreadyRegistered = computed(() => {
+  const msg = errorMessage.value.toLowerCase()
+  return msg.includes('registrado') || msg.includes('already registered')
+})
+
+function triggerError(msg: string) {
+  errorMessage.value = msg
+  showToast.value = true
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => {
+    showToast.value = false
+  }, 7000)
+}
+
+function dismissError() {
+  errorMessage.value = ''
+  showToast.value = false
+  if (toastTimer) clearTimeout(toastTimer)
+}
 
 const isStudentEmailValid = computed(() => {
   if (!studentEmail.value) return true
   return studentEmail.value.toLowerCase().endsWith('@ufps.edu.co')
 })
 
+const isCompanyEmailFreeDomain = computed(() => {
+  if (!companyEmail.value) return false
+  const domain = companyEmail.value.split('@')[1]?.toLowerCase()
+  return ['gmail.com', 'hotmail.com', 'yahoo.com'].includes(domain)
+})
+
+function isPasswordStrong(pwd: string): boolean {
+  return (
+    pwd.length >= 8 &&
+    /[A-Z]/.test(pwd) &&
+    /[a-z]/.test(pwd) &&
+    /[0-9]/.test(pwd) &&
+    /[^A-Za-z0-9]/.test(pwd)
+  )
+}
+
 function switchRole(role: UserRole) {
   activeRole.value = role
-  errorMessage.value = ''
+  dismissError()
   registerSuccess.value = false
 }
 
-function handleRegister() {
-  errorMessage.value = ''
+async function handleRegister() {
+  dismissError()
 
   if (activeRole.value === 'student') {
-    if (!studentName.value || !studentEmail.value || !studentCode.value || !studentDocNumber.value || !studentPassword.value) {
-      errorMessage.value = 'Completa todos los campos obligatorios del estudiante.'
+    if (!studentName.value || !studentEmail.value || !studentCode.value || !studentPassword.value) {
+      triggerError('Completa todos los campos obligatorios del estudiante.')
       return
     }
     if (!isStudentEmailValid.value) {
-      errorMessage.value = 'El correo debe terminar en @ufps.edu.co'
+      triggerError('El correo estudiantil debe ser institucional y terminar en @ufps.edu.co')
       return
     }
-    if (studentPassword.value.length < 8) {
-      errorMessage.value = 'La contraseña debe tener mínimo 8 caracteres.'
+    if (!isPasswordStrong(studentPassword.value)) {
+      triggerError('La contraseña debe tener mínimo 8 caracteres, al menos 1 mayúscula, 1 minúscula, 1 número y 1 carácter especial.')
+      return
+    }
+    const semesterNum = Number(studentSemester.value)
+    if (semesterNum < 6 || semesterNum > 10) {
+      triggerError('El semestre debe estar comprendido entre 6° y 10° semestre.')
       return
     }
     if (!studentConsent.value) {
-      errorMessage.value = 'Debes aceptar la autorización de tratamiento de datos (Ley 1581).'
+      triggerError('Debes aceptar la autorización de tratamiento de datos personales (Ley 1581).')
       return
+    }
+
+    isSubmitting.value = true
+    try {
+      await registerStudent({
+        email: studentEmail.value,
+        password: studentPassword.value,
+        full_name: studentName.value,
+        student_code: studentCode.value,
+        current_semester: semesterNum,
+        contact_email: studentEmail.value,
+        bio: `Estudiante de ${semesterNum}° semestre de Ingeniería de Sistemas UFPS.`,
+      })
+
+      registerSuccess.value = true
+      setTimeout(async () => {
+        await navigateTo('/me')
+      }, 1000)
+    } catch (err: unknown) {
+      triggerError(extractApiErrorMessage(err, 'No fue posible registrar al estudiante. Verifica los datos e inténtalo nuevamente.'))
+    } finally {
+      isSubmitting.value = false
     }
   } else {
     if (!companyName.value || !companyNit.value || !companySector.value || !companyRep.value || !companyEmail.value || !companyPhone.value || !companyPassword.value) {
-      errorMessage.value = 'Completa todos los campos obligatorios de la empresa.'
+      triggerError('Completa todos los campos obligatorios de la empresa.')
       return
     }
-    if (companyPassword.value.length < 8) {
-      errorMessage.value = 'La contraseña debe tener mínimo 8 caracteres.'
+
+    const normalizedNit = normalizeNit(companyNit.value)
+    if (!isValidNit(normalizedNit)) {
+      triggerError('El NIT ingresado no es válido según el algoritmo DIAN Módulo 11 (formato requerido: 900123456-8).')
+      return
+    }
+
+    if (isCompanyEmailFreeDomain.value) {
+      triggerError('Para registrar una empresa debes usar un correo corporativo (no dominios personales como gmail.com, hotmail.com o yahoo.com).')
+      return
+    }
+
+    if (!isPasswordStrong(companyPassword.value)) {
+      triggerError('La contraseña debe tener mínimo 8 caracteres, al menos 1 mayúscula, 1 minúscula, 1 número y 1 carácter especial.')
       return
     }
     if (!companyConsent.value) {
-      errorMessage.value = 'Debes certificar la personería jurídica y tratamiento de datos (Ley 1581).'
+      triggerError('Debes certificar la personería jurídica y tratamiento de datos (Ley 1581).')
       return
     }
-  }
 
-  isSubmitting.value = true
-  setTimeout(() => {
-    isSubmitting.value = false
-    registerSuccess.value = true
-  }, 800)
+    isSubmitting.value = true
+    try {
+      await registerCompany({
+        email: companyEmail.value,
+        password: companyPassword.value,
+        nit: normalizedNit,
+        business_name: companyName.value,
+        economic_sector: companySector.value,
+        description: `Empresa ubicada en ${companyCity.value || 'Cúcuta'}, sector ${companySector.value}.`,
+        contact_name: companyRep.value,
+        contact_email: companyEmail.value,
+        contact_phone: companyPhone.value,
+      })
+
+      registerSuccess.value = true
+      setTimeout(async () => {
+        await navigateTo('/me')
+      }, 1000)
+    } catch (err: unknown) {
+      triggerError(extractApiErrorMessage(err, 'No fue posible registrar la empresa. Verifica los datos e inténtalo nuevamente.'))
+    } finally {
+      isSubmitting.value = false
+    }
+  }
 }
 </script>
 
 <template>
-  <div class="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-8 flex flex-col justify-center min-h-[calc(100vh-140px)]">
+  <div class="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-8 flex flex-col justify-center min-h-[calc(100vh-140px)] relative">
+    <!-- Floating Sonner-Style Toast Notification -->
+    <Transition
+      enter-active-class="transform ease-out duration-300 transition"
+      enter-from-class="translate-y-[-20px] opacity-0 sm:translate-y-0 sm:translate-x-4"
+      enter-to-class="translate-y-0 opacity-100 sm:translate-x-0"
+      leave-active-class="transition ease-in duration-200"
+      leave-from-class="opacity-100"
+      leave-to-class="opacity-0"
+    >
+      <div
+        v-if="showToast && errorMessage"
+        class="fixed top-6 right-4 sm:right-8 z-50 max-w-md w-full bg-surface border-2 border-neutral-900 dark:border-neutral-700 rounded-2xl p-4 shadow-[6px_6px_0px_0px_rgba(239,68,68,1)] flex items-start gap-3"
+        role="alert"
+      >
+        <div class="w-8 h-8 rounded-xl bg-red-500 text-white flex items-center justify-center font-black shrink-0 border border-neutral-900 shadow-[1px_1px_0px_0px_rgba(0,0,0,1)]">
+          ✕
+        </div>
+        <div class="flex-1 text-xs sm:text-sm">
+          <div class="font-black text-text-main flex items-center justify-between">
+            <span>Atención en el Registro</span>
+            <button
+              type="button"
+              class="text-text-muted hover:text-text-main text-base font-bold ml-2 focus-visible:outline-none"
+              aria-label="Cerrar notificación"
+              @click="dismissError"
+            >
+              ✕
+            </button>
+          </div>
+          <p class="text-text-muted font-semibold mt-1">
+            {{ errorMessage }}
+          </p>
+          <div v-if="isAlreadyRegistered" class="mt-2 pt-2 border-t border-border-subtle flex items-center gap-2">
+            <NuxtLink
+              to="/auth/login"
+              class="inline-flex items-center gap-1 font-black text-institutional-500 hover:underline"
+            >
+              <span>Ir a Iniciar Sesión</span>
+              <span>→</span>
+            </NuxtLink>
+          </div>
+        </div>
+      </div>
+    </Transition>
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-16 items-start lg:items-center">
       <!-- Izquierda: Titular y Propuesta de Valor Audaz -->
       <div class="space-y-6">
@@ -205,12 +348,35 @@ function handleRegister() {
           <div
             v-if="errorMessage"
             role="alert"
-            class="mb-4 p-3.5 rounded-xl bg-red-100 dark:bg-red-950/40 border-2 border-red-500 text-red-900 dark:text-red-200 text-sm font-bold flex items-center gap-2.5"
+            class="mb-4 p-4 rounded-2xl bg-red-100 dark:bg-red-950/40 border-2 border-red-500 text-red-900 dark:text-red-200 text-sm font-bold shadow-[3px_3px_0px_0px_rgba(239,68,68,0.5)] space-y-2"
           >
-            <svg class="w-5 h-5 text-red-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <span>{{ errorMessage }}</span>
+            <div class="flex items-start justify-between gap-2.5">
+              <div class="flex items-center gap-2.5">
+                <svg class="w-5 h-5 text-red-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span class="font-black">{{ errorMessage }}</span>
+              </div>
+              <button
+                type="button"
+                class="text-red-700 hover:text-red-900 dark:text-red-300 font-black text-sm ml-2"
+                aria-label="Cerrar alerta"
+                @click="dismissError"
+              >
+                ✕
+              </button>
+            </div>
+
+            <!-- Iniciar sesión CTA si el correo ya existe -->
+            <div v-if="isAlreadyRegistered" class="pt-2 border-t border-red-300 dark:border-red-800/60 flex items-center justify-between text-xs sm:text-sm">
+              <span class="text-neutral-700 dark:text-neutral-300 font-medium">¿Ya tienes cuenta registrada?</span>
+              <NuxtLink
+                to="/auth/login"
+                class="underline font-black text-institutional-600 dark:text-institutional-400 hover:text-institutional-700"
+              >
+                Iniciar sesión aquí →
+              </NuxtLink>
+            </div>
           </div>
 
           <div
@@ -218,9 +384,9 @@ function handleRegister() {
             role="status"
             class="mb-4 p-4 rounded-xl bg-emerald-100 dark:bg-emerald-950/40 border-2 border-emerald-600 text-emerald-900 dark:text-emerald-200 text-sm font-bold flex items-center justify-between gap-2"
           >
-            <span>¡Cuenta creada con éxito! Revisa tu correo institucional para activar tu acceso.</span>
-            <NuxtLink to="/auth/login" class="underline font-black hover:text-emerald-700 whitespace-nowrap ml-2">
-              Ingresar →
+            <span>¡Cuenta creada y configurada con éxito! Redirigiendo a tu perfil...</span>
+            <NuxtLink to="/me" class="underline font-black hover:text-emerald-700 whitespace-nowrap ml-2">
+              Ver perfil →
             </NuxtLink>
           </div>
 
