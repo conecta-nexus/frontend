@@ -1,0 +1,217 @@
+@import "tailwindcss";
+@import "@nuxt/ui";
+
+/* ==========================================================================
+   SELF-HOSTED TYPOGRAPHY
+   - Uncut Sans: Primary geometric neo-brutalist sans by Kasper Pyndt
+   ========================================================================== */
+@font-face {
+  font-family: 'Uncut Sans';
+  font-style: normal;
+  font-weight: 300 800;
+  font-display: swap;
+  src: url('/fonts/UncutSans-Variable.woff2') format('woff2');
+}
+
+/* ==========================================================================
+   CONECTA NEXUS - GLOBAL DESIGN SYSTEM TOKENS
+   Institutional Identity: UFPS Red (#bc0017) & Harmonious Pastel Palettes
+   ========================================================================== */
+
+:root {
+  /* --- Explicit Color Primitives --- */
+  --color-institutional: #bc0017;
+  --color-pastel-cream: #f7f2ee;
+  --color-pastel-coral: #f3c5ba;
+  --color-pastel-slate: #595d62;
+  --color-pastel-blue: #e8effd;
+  --color-pastel-mint: #d7f5e8;
+  --color-pastel-peach: #fde4cf;
+  --color-dark-canvas: #0f1218;
+
+  /* --- Light Mode Semantic Tokens --- */
+  --bg-canvas: #f7f2ee;
+  --bg-surface: #ffffff;
+  --bg-surface-elevated: #ffffff;
+  --bg-accent-pastel: #f3c5ba;
+
+  --text-main: #191c21;
+  --text-muted: #595d62;
+  --text-on-accent: #ffffff;
+
+  --border-subtle: #e6dfd7;
+  --border-prominent: #d8cec4;
+
+  /* Nuxt UI Overrides for Light Mode */
+  --ui-bg: var(--bg-canvas);
+  --ui-bg-muted: #efe9e3;
+  --ui-bg-elevated: var(--bg-surface);
+  --ui-bg-accented: rgba(188, 0, 23, 0.08);
+  --ui-text: var(--text-main);
+  --ui-text-muted: var(--text-muted);
+  --ui-border: var(--border-subtle);
+}
+
+.dark {
+  /* --- Dark Mode Semantic Tokens --- */
+  --bg-canvas: #0f1218;
+  --bg-surface: #171b23;
+  --bg-surface-elevated: #1f2530;
+  --bg-accent-pastel: #e8effd;
+
+  --text-main: #e8effd;
+  --text-muted: #9ba4b5;
+  --text-on-accent: #0f1218;
+
+  --border-subtle: #242a36;
+  --border-prominent: #323b4c;
+
+  /* Nuxt UI Overrides for Dark Mode */
+  --ui-bg: var(--bg-canvas);
+  --ui-bg-muted: #151921;
+  --ui-bg-elevated: var(--bg-surface);
+  --ui-bg-accented: rgba(232, 239, 253, 0.08);
+  --ui-text: var(--text-main);
+  --ui-text-muted: var(--text-muted);
+  --ui-border: var(--border-subtle);
+}
+
+/* ==========================================================================
+   Tailwind CSS v4 Theme Registration
+   ========================================================================== */
+@theme {
+  /* Typography Families */
+  --font-sans: 'Uncut Sans', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Uncut Sans', ui-sans-serif, system-ui, sans-serif;
+
+  /* Institutional Brand Scale (#bc0017) */
+  --color-institutional-50: #fdf2f0;
+  --color-institutional-100: #fbe5e1;
+  --color-institutional-200: #f3c5ba; /* Pastel Coral / Light Accent */
+  --color-institutional-300: #e79a8a;
+  --color-institutional-400: #d95c4c;
+  --color-institutional-500: #bc0017; /* Official Institutional Red */
+  --color-institutional-600: #a30014;
+  --color-institutional-700: #850010;
+  --color-institutional-800: #6a000d;
+  --color-institutional-900: #52000a;
+  --color-institutional-950: #300005;
+
+  /* Named Pastel Palette */
+  --color-pastel-cream: #f7f2ee;
+  --color-pastel-coral: #f3c5ba;
+  --color-pastel-slate: #595d62;
+  --color-pastel-blue: #e8effd;
+  --color-pastel-mint: #d7f5e8;
+  --color-pastel-peach: #fde4cf;
+  --color-canvas-dark: #0f1218;
+
+  /* Semantic Dynamic Colors */
+  --color-canvas: var(--bg-canvas);
+  --color-surface: var(--bg-surface);
+  --color-surface-elevated: var(--bg-surface-elevated);
+  --color-text-main: var(--text-main);
+  --color-text-muted: var(--text-muted);
+  --color-border-subtle: var(--border-subtle);
+  --color-border-prominent: var(--border-prominent);
+}
+
+@layer base {
+  html, body {
+    font-family: var(--font-sans);
+    background-color: var(--bg-canvas);
+    color: var(--text-main);
+    transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+  }
+
+  ::selection {
+    background-color: var(--color-institutional-200);
+    color: #191c21;
+  }
+
+  .dark ::selection {
+    background-color: var(--color-institutional-800);
+    color: #fdf2f0;
+  }
+
+  :focus-visible {
+    outline-color: var(--color-institutional);
+  }
+}
+
+/* ==========================================================================
+   AUTHENTIC MOTION SYSTEM (Meeko Neo-Brutalist & Tactile Physics)
+   ========================================================================== */
+@keyframes float-gentle {
+  0%, 100% {
+    transform: translateY(0px) rotate(-6deg);
+  }
+  50% {
+    transform: translateY(-9px) rotate(-4deg);
+  }
+}
+
+@keyframes float-reverse {
+  0%, 100% {
+    transform: translateY(0px) rotate(6deg);
+  }
+  50% {
+    transform: translateY(9px) rotate(8deg);
+  }
+}
+
+@keyframes float-slow {
+  0%, 100% {
+    transform: translateY(0px) rotate(-8deg);
+  }
+  50% {
+    transform: translateY(-7px) rotate(-10deg);
+  }
+}
+
+@keyframes twinkle-star {
+  0%, 100% {
+    transform: scale(1) rotate(0deg);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.3) rotate(20deg);
+    opacity: 0.85;
+  }
+}
+
+@keyframes terminal-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+.animate-float-gentle {
+  animation: float-gentle 5.5s ease-in-out infinite;
+}
+
+.animate-float-reverse {
+  animation: float-reverse 6.5s ease-in-out infinite;
+}
+
+.animate-float-slow {
+  animation: float-slow 7s ease-in-out infinite;
+}
+
+.animate-twinkle {
+  animation: twinkle-star 2.8s ease-in-out infinite;
+}
+
+.animate-terminal-cursor {
+  animation: terminal-blink 1.2s step-end infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-float-gentle,
+  .animate-float-reverse,
+  .animate-float-slow,
+  .animate-twinkle,
+  .animate-terminal-cursor {
+    animation: none !important;
+  }
+}
+
