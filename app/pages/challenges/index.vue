@@ -175,7 +175,6 @@ onMounted(() => {
     <CatalogFilterBar
       :loading="loading"
       :total-results="pagination?.total || 0"
-      @reset="handleReset"
     />
 
     <!-- Error Banner -->

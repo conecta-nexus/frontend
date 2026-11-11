@@ -3,6 +3,7 @@ import { mount, type VueWrapper } from '@vue/test-utils'
 import { reactive, ref } from 'vue'
 import IndexPage from '~/pages/challenges/index.vue'
 import CatalogEmptyState from '~/components/challenges/CatalogEmptyState.vue'
+import CatalogFilterBar from '~/components/challenges/CatalogFilterBar.vue'
 import type { Challenge } from '~/types/challenge'
 
 // Deterministic mock state for useChallenges
@@ -246,5 +247,78 @@ describe('Challenges Index Page - Empty State Integration', () => {
     // Exactly 1 additional load was triggered (2 total: 1 on mount, 1 on query reset)
     // and no parallel duplicate calls were made
     expect(mockFetchCatalog).toHaveBeenCalledTimes(2)
+  })
+
+  it('handles actual filter-bar reset flow cleanly with a single router push and exactly one catalog reload', async () => {
+    mockRoute.query = {
+      q: 'Cloud',
+      modality: 'HYBRID',
+    }
+    mockLoading.value = false
+    mockChallenges.value = []
+
+    wrapper = mount(IndexPage, {
+      global: {
+        stubs: {
+          NuxtLink: NuxtLinkStub,
+        },
+      },
+    })
+
+    // Initial mount calls fetchCatalog once
+    expect(mockFetchCatalog).toHaveBeenCalledTimes(1)
+
+    // Verify CatalogFilterBar is mounted and has active filters
+    const filterBar = wrapper.findComponent(CatalogFilterBar)
+    expect(filterBar.exists()).toBe(true)
+
+    // Wait for onMounted sync to update DOM in CatalogFilterBar
+    await wrapper.vm.$nextTick()
+
+    // Find the reset button rendered inside CatalogFilterBar ("Restablecer")
+    const resetButton = filterBar.findAll('button').find(b => b.text().includes('Restablecer'))
+    expect(resetButton?.exists()).toBe(true)
+
+    // Trigger the reset button on CatalogFilterBar
+    await resetButton!.trigger('click')
+
+    // CatalogFilterBar performed its own router.push({ query: {} })
+    // Parent IndexPage did NOT perform a second redundant router.push
+    expect(mockRouterPush).toHaveBeenCalledTimes(1)
+    expect(mockRouterPush).toHaveBeenCalledWith({ query: {} })
+
+    // Wait for route.query watcher in IndexPage to trigger following the route change
+    await wrapper.vm.$nextTick()
+
+    // Exactly one catalog reload occurred (2 total: 1 on initial mount, 1 on filter-bar reset)
+    expect(mockFetchCatalog).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not trigger redundant parent navigation when CatalogFilterBar emits reset', async () => {
+    mockRoute.query = {
+      q: 'DevOps',
+    }
+    mockLoading.value = false
+    mockChallenges.value = []
+
+    wrapper = mount(IndexPage, {
+      global: {
+        stubs: {
+          CatalogFilterBar: CatalogFilterBarStub,
+          NuxtLink: NuxtLinkStub,
+        },
+      },
+    })
+
+    expect(mockFetchCatalog).toHaveBeenCalledTimes(1)
+
+    const filterBar = wrapper.findComponent(CatalogFilterBarStub)
+    expect(filterBar.exists()).toBe(true)
+
+    // If CatalogFilterBar emits reset, IndexPage should NOT perform redundant parent router.push
+    await filterBar.vm.$emit('reset')
+
+    expect(mockRouterPush).not.toHaveBeenCalled()
+    expect(mockFetchCatalog).toHaveBeenCalledTimes(1)
   })
 })

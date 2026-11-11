@@ -102,4 +102,3 @@ describe('CatalogEmptyState Component', () => {
     expect(wrapper.emitted('reset')?.length).toBe(1)
   })
 })
-
