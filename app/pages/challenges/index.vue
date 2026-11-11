@@ -1,338 +1,314 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
-import ChallengeCard from '~/components/challenges/ChallengeCard.vue'
+import { computed, onMounted, watch } from 'vue'
+import type { ChallengeCatalogFilter } from '~/types/challenge'
 import { useChallenges } from '~/composables/useChallenges'
+import CatalogFilterBar from '~/components/challenges/CatalogFilterBar.vue'
+import CatalogEmptyState, { type ActiveFilterItem } from '~/components/challenges/CatalogEmptyState.vue'
 
 useHead({
-  title: 'Catálogo de Retos de la Industria | Conecta Nexus UFPS',
+  title: 'Catálogo de Desafíos Empresariales | Conecta Nexus UFPS',
   meta: [
     {
       name: 'description',
-      content: 'Banco oficial de problemáticas y retos de la industria regional para estudiantes de ingeniería de sistemas de la UFPS.',
+      content: 'Explora y postúlate a desafíos tecnológicos reales planteados por el sector empresarial para estudiantes de Ingeniería de Sistemas UFPS.',
     },
   ],
 })
 
 const route = useRoute()
 const router = useRouter()
+const { challenges, pagination, loading, error, fetchCatalog } = useChallenges()
 
-const {
-  challenges,
-  pagination,
-  loading,
-  error,
-  fetchCatalog,
-} = useChallenges()
+// Formatted active filters derived strictly from current URL query parameters
+const activeFilterItems = computed<ActiveFilterItem[]>(() => {
+  const items: ActiveFilterItem[] = []
+  const q = route.query
 
-const ALLOWED_SIZES = [12, 24, 48] as const
-type AllowedSize = (typeof ALLOWED_SIZES)[number]
-
-function parsePage(value: unknown): number {
-  if (typeof value !== 'string' || value.trim() === '') return 1
-  const num = Number(value)
-  return Number.isInteger(num) && num >= 1 ? num : 1
-}
-
-function parseSize(value: unknown): AllowedSize {
-  if (typeof value !== 'string' || value.trim() === '') return 12
-  const num = Number(value)
-  if (!Number.isInteger(num)) return 12
-  return ALLOWED_SIZES.includes(num as AllowedSize) ? (num as AllowedSize) : 12
-}
-
-const currentPage = computed<number>(() => parsePage(route.query.page))
-const currentSize = computed<AllowedSize>(() => parseSize(route.query.size))
-
-const totalCount = computed<number>(() => {
-  if (pagination.value && typeof pagination.value.total === 'number') {
-    return pagination.value.total
-  }
-  return challenges.value.length
-})
-
-const resultsSummaryText = computed<string>(() => {
-  const total = totalCount.value
-  const count = challenges.value.length
-
-  if (total === 0 || count === 0) {
-    return '0 oportunidades disponibles'
-  }
-
-  const start = (currentPage.value - 1) * currentSize.value + 1
-  const end = Math.min(start + count - 1, total)
-
-  if (total === 1) {
-    return 'Mostrando 1 de 1 oportunidad disponible'
-  }
-
-  return `Mostrando ${start}–${end} de ${total} oportunidades`
-})
-
-async function loadData(): Promise<void> {
-  try {
-    await fetchCatalog({
-      page: currentPage.value,
-      limit: currentSize.value,
+  if (typeof q.q === 'string' && q.q.trim()) {
+    items.push({
+      key: 'q',
+      label: 'Búsqueda',
+      value: `"${q.q.trim()}"`,
     })
+  }
+
+  const sector = typeof q.sector === 'string' ? q.sector : (typeof q.economic_sector === 'string' ? q.economic_sector : '')
+  if (sector.trim()) {
+    items.push({
+      key: 'sector',
+      label: 'Sector',
+      value: sector.trim(),
+    })
+  }
+
+  const modalityMap: Record<string, string> = {
+    REMOTE: 'Remoto',
+    HYBRID: 'Híbrido',
+    ON_SITE: 'Presencial',
+  }
+  if (typeof q.modality === 'string' && modalityMap[q.modality]) {
+    items.push({
+      key: 'modality',
+      label: 'Modalidad',
+      value: modalityMap[q.modality],
+    })
+  }
+
+  const difficultyMap: Record<string, string> = {
+    BEGINNER: 'Inicial / Básico',
+    INTERMEDIATE: 'Intermedio',
+    ADVANCED: 'Avanzado',
+  }
+  const difficulty = typeof q.difficulty === 'string' ? q.difficulty : (typeof q.difficulty_level === 'string' ? q.difficulty_level : '')
+  if (difficulty && difficultyMap[difficulty]) {
+    items.push({
+      key: 'difficulty',
+      label: 'Dificultad',
+      value: difficultyMap[difficulty],
+    })
+  }
+
+  if (typeof q.knowledge_area === 'string' && q.knowledge_area.trim()) {
+    items.push({
+      key: 'knowledge_area',
+      label: 'Área',
+      value: q.knowledge_area.trim(),
+    })
+  }
+
+  if (typeof q.skill === 'string' && q.skill.trim()) {
+    const skills = q.skill.split(',').map(s => s.trim()).filter(Boolean)
+    skills.forEach((s, idx) => {
+      items.push({
+        key: `skill-${idx}`,
+        label: 'Habilidad',
+        value: `#${s}`,
+      })
+    })
+  }
+
+  if (typeof q.min_semester === 'string' && q.min_semester.trim()) {
+    const sem = parseInt(q.min_semester, 10)
+    if (!Number.isNaN(sem)) {
+      items.push({
+        key: 'min_semester',
+        label: 'Semestre mín.',
+        value: `${sem}°`,
+      })
+    }
+  }
+
+  return items
+})
+
+// Fetch opportunities using route query parameters
+async function loadCatalog() {
+  try {
+    const filters: ChallengeCatalogFilter = {
+      q: typeof route.query.q === 'string' ? route.query.q : undefined,
+      sector: typeof route.query.sector === 'string' ? route.query.sector : (typeof route.query.economic_sector === 'string' ? route.query.economic_sector : undefined),
+      modality: typeof route.query.modality === 'string' ? (route.query.modality as ChallengeCatalogFilter['modality']) : undefined,
+      difficulty: typeof route.query.difficulty === 'string' ? (route.query.difficulty as ChallengeCatalogFilter['difficulty']) : undefined,
+      skill: typeof route.query.skill === 'string' ? route.query.skill : undefined,
+      knowledge_area: typeof route.query.knowledge_area === 'string' ? route.query.knowledge_area : undefined,
+      min_semester: typeof route.query.min_semester === 'string' ? parseInt(route.query.min_semester, 10) : undefined,
+      page: typeof route.query.page === 'string' ? parseInt(route.query.page, 10) : 1,
+      limit: typeof route.query.limit === 'string' ? parseInt(route.query.limit, 10) : 10,
+    }
+    await fetchCatalog(filters)
   } catch {
-    // El composable useChallenges ya captura y asigna error.value de forma reactiva
+    // Error is handled reactively by useChallenges()
   }
 }
 
-async function handlePageChange(newPage: number): Promise<void> {
-  const normalizedPage = Math.max(1, newPage)
-  if (normalizedPage === currentPage.value) return
+// Reset all filters and synchronize with route without duplicate requests
+function handleReset() {
+  const hasActiveQuery = Object.keys(route.query).length > 0
+  if (hasActiveQuery) {
+    // Changing route.query will trigger the route watcher once
+    router.push({ query: {} })
+  } else {
+    // If route.query was already empty, push is a no-op so trigger loadCatalog directly
+    loadCatalog()
+  }
+}
 
-  await router.push({
+function changePage(newPage: number) {
+  router.push({
     query: {
       ...route.query,
-      page: String(normalizedPage),
+      page: String(newPage),
     },
   })
 }
 
-async function handleSizeChange(newSize: AllowedSize): Promise<void> {
-  if (newSize === currentSize.value) return
-
-  await router.push({
-    query: {
-      ...route.query,
-      size: String(newSize),
-      page: '1',
-    },
-  })
-}
-
-// Sincronización reactiva con URL query params (inicial y subsecuente)
+// Single source of truth for URL query changes
 watch(
-  [() => route.query.page, () => route.query.size],
+  () => route.query,
   () => {
-    loadData()
+    loadCatalog()
   },
-  { immediate: true },
+  { deep: true },
 )
+
+onMounted(() => {
+  loadCatalog()
+})
 </script>
 
 <template>
-  <div class="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-6 sm:space-y-8">
-    <!-- 1. Encabezado Compacto del Catálogo (Masthead) -->
-    <header
-      class="p-6 sm:p-8 rounded-3xl bg-surface border-2 border-neutral-900 dark:border-neutral-700 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] dark:shadow-[4px_4px_0px_0px_rgba(255,255,255,0.12)] space-y-3"
-    >
-      <div
-        class="inline-flex items-center gap-2 px-3.5 py-1 rounded-full text-xs font-black uppercase tracking-wider border-2 border-neutral-900/30 dark:border-neutral-600 bg-pastel-mint/30 dark:bg-pastel-mint/15 text-text-main"
-      >
-        <span class="w-2.5 h-2.5 rounded-full bg-institutional-500 animate-pulse" />
-        <span>Ecosistema de Innovación UFPS · Periodo Activo</span>
+  <div class="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-8 min-h-[calc(100vh-140px)]">
+    <!-- Header Section -->
+    <div class="mb-8">
+      <div class="inline-flex items-center gap-2 px-3 py-1 bg-red-100 dark:bg-red-950/60 border border-red-600 rounded-full text-xs font-black text-red-700 dark:text-red-400 uppercase tracking-widest mb-3">
+        <span>Oportunidades Reales</span>
       </div>
-
-      <h1 class="text-2xl sm:text-3xl lg:text-4xl font-black text-text-main tracking-tight">
-        Catálogo de Retos de la Industria
+      <h1 class="text-3xl sm:text-4xl lg:text-5xl font-black text-neutral-900 dark:text-neutral-100 tracking-tight">
+        Catálogo de Desafíos Empresariales
       </h1>
-
-      <p class="text-sm sm:text-base text-text-muted font-medium max-w-2xl leading-relaxed">
-        Problemáticas reales planteadas por empresas y PYMEs de la región para ser desarrolladas por estudiantes de Ingeniería de Sistemas UFPS en cursos y prácticas curriculares (semestres 6.º a 10.º).
+      <p class="mt-2 text-sm sm:text-base text-neutral-600 dark:text-neutral-400 max-w-3xl font-medium">
+        Encuentra proyectos reales del sector empresarial, filtra por tecnologías y aplica con tu carta de motivación académica.
       </p>
-    </header>
-
-    <!-- 2. Barra de Resultados y Selector de Tamaño -->
-    <section
-      aria-label="Controles del catálogo"
-      class="p-4 sm:p-5 rounded-2xl bg-surface border-2 border-neutral-900 dark:border-neutral-700 shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] dark:shadow-[3px_3px_0px_0px_rgba(255,255,255,0.1)] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
-    >
-      <!-- Resumen de Oportunidades -->
-      <div class="text-sm font-bold text-text-main">
-        <span v-if="loading" class="text-text-muted">Actualizando oportunidades...</span>
-        <span v-else>{{ resultsSummaryText }}</span>
-      </div>
-
-      <!-- Selector de Tamaño de Página -->
-      <div class="flex items-center gap-2.5 self-end sm:self-auto">
-        <span class="text-xs font-black uppercase tracking-wider text-text-muted">Por página:</span>
-        <div
-          role="group"
-          aria-label="Seleccionar cantidad de retos por página"
-          class="inline-flex rounded-xl border-2 border-neutral-900 dark:border-neutral-700 p-0.5 bg-canvas"
-        >
-          <button
-            v-for="size in ALLOWED_SIZES"
-            :key="size"
-            type="button"
-            :aria-pressed="currentSize === size"
-            :class="[
-              currentSize === size
-                ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]'
-                : 'text-text-muted hover:text-text-main hover:bg-surface/50',
-              'min-w-[44px] min-h-[44px] px-3.5 rounded-lg text-xs font-black transition-all flex items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-institutional-500',
-            ]"
-            @click="handleSizeChange(size)"
-          >
-            {{ size }}
-          </button>
-        </div>
-      </div>
-    </section>
-
-    <!-- 3. Estados de la Superficie -->
-
-    <!-- 3.1. Estado de Carga (Skeleton Grid: 6 tarjetas) -->
-    <div
-      v-if="loading"
-      role="status"
-      aria-live="polite"
-      class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8"
-    >
-      <span class="sr-only">Cargando catálogo de retos disponibles...</span>
-
-      <div
-        v-for="i in 6"
-        :key="'skeleton-' + i"
-        class="rounded-3xl border-2 border-neutral-900/15 dark:border-neutral-700/30 p-6 sm:p-7 bg-surface shadow-[4px_4px_0px_0px_rgba(0,0,0,0.06)] dark:shadow-[4px_4px_0px_0px_rgba(255,255,255,0.04)] animate-pulse flex flex-col justify-between space-y-6"
-      >
-        <div class="space-y-4">
-          <!-- Cabecera Skeleton -->
-          <div class="flex items-center justify-between">
-            <div class="h-6 w-24 bg-neutral-200 dark:bg-neutral-800 rounded-full" />
-            <div class="h-6 w-32 bg-neutral-200 dark:bg-neutral-800 rounded-full" />
-          </div>
-
-          <!-- Sector & Dificultad Skeleton -->
-          <div class="flex items-center justify-between pt-1">
-            <div class="h-5 w-28 bg-neutral-200 dark:bg-neutral-800 rounded-full" />
-            <div class="h-5 w-20 bg-neutral-200 dark:bg-neutral-800 rounded-full" />
-          </div>
-
-          <!-- Título Skeleton -->
-          <div class="space-y-2 pt-2">
-            <div class="h-6 w-5/6 bg-neutral-300 dark:bg-neutral-700 rounded-lg" />
-            <div class="h-6 w-3/5 bg-neutral-300 dark:bg-neutral-700 rounded-lg" />
-            <div class="h-3 w-1/3 bg-neutral-200 dark:bg-neutral-800 rounded" />
-          </div>
-
-          <!-- Descripción Skeleton -->
-          <div class="space-y-1.5 pt-1">
-            <div class="h-3.5 w-full bg-neutral-200 dark:bg-neutral-800 rounded" />
-            <div class="h-3.5 w-11/12 bg-neutral-200 dark:bg-neutral-800 rounded" />
-            <div class="h-3.5 w-4/5 bg-neutral-200 dark:bg-neutral-800 rounded" />
-          </div>
-        </div>
-
-        <!-- Footer Skeleton -->
-        <div class="pt-5 border-t-2 border-neutral-200 dark:border-neutral-800 space-y-3">
-          <div class="h-5 w-32 bg-neutral-200 dark:bg-neutral-800 rounded-lg" />
-          <div class="flex gap-2">
-            <div class="h-5 w-14 bg-neutral-200 dark:bg-neutral-800 rounded-md" />
-            <div class="h-5 w-16 bg-neutral-200 dark:bg-neutral-800 rounded-md" />
-            <div class="h-5 w-12 bg-neutral-200 dark:bg-neutral-800 rounded-md" />
-          </div>
-        </div>
-      </div>
     </div>
 
-    <!-- 3.2. Estado de Error -->
+    <!-- Reactive Filter Bar Component -->
+    <CatalogFilterBar
+      :loading="loading"
+      :total-results="pagination?.total || 0"
+    />
+
+    <!-- Error Banner -->
     <div
-      v-else-if="error"
-      role="alert"
-      class="rounded-3xl border-2 border-neutral-900 dark:border-neutral-700 p-8 sm:p-12 text-center bg-surface shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] dark:shadow-[6px_6px_0px_0px_rgba(255,255,255,0.15)] max-w-xl mx-auto space-y-5"
+      v-if="error"
+      class="mb-8 p-4 bg-red-50 dark:bg-red-950/40 border-2 border-red-600 rounded-2xl shadow-[4px_4px_0px_0px_rgba(220,38,38,1)] flex items-center justify-between"
     >
-      <div
-        class="w-16 h-16 mx-auto rounded-2xl bg-pastel-coral dark:bg-pastel-coral/25 border-2 border-neutral-900 dark:border-neutral-700 flex items-center justify-center text-3xl shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] text-neutral-900 dark:text-neutral-100"
-      >
-        <svg
-          class="w-8 h-8 text-neutral-900 dark:text-neutral-100"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-          aria-hidden="true"
-        >
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-        </svg>
+      <div class="flex items-center gap-3">
+        <span class="text-xl">⚠️</span>
+        <span class="text-sm font-bold text-red-800 dark:text-red-300">{{ error }}</span>
       </div>
-
-      <h2 class="text-xl sm:text-2xl font-black text-text-main tracking-tight">
-        No pudimos conectar con el banco de oportunidades
-      </h2>
-
-      <p class="text-sm text-text-muted leading-relaxed max-w-md mx-auto">
-        Ocurrió un problema al cargar los retos de la industria. Por favor, verifica tu conexión e inténtalo de nuevo.
-      </p>
-
       <button
         type="button"
-        class="inline-flex items-center gap-2 px-6 py-3 rounded-2xl bg-institutional-500 hover:bg-institutional-600 text-white font-black text-sm uppercase tracking-wider border-2 border-neutral-900 shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-institutional-500"
-        @click="loadData"
+        class="px-3 py-1.5 bg-red-600 text-white font-black text-xs rounded-xl shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
+        @click="loadCatalog"
       >
-        <span>Reintentar</span>
+        Reintentar
       </button>
     </div>
 
-    <!-- 3.3. Estado Vacío Básico -->
+    <!-- Loading Skeleton Grid -->
     <div
-      v-else-if="challenges.length === 0"
-      class="rounded-3xl border-2 border-dashed border-border-prominent p-10 sm:p-14 text-center bg-surface/40 max-w-xl mx-auto space-y-4"
+      v-if="loading && (!challenges || challenges.length === 0)"
+      class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
     >
       <div
-        class="w-16 h-16 mx-auto rounded-2xl bg-pastel-blue/40 dark:bg-pastel-blue/20 border-2 border-neutral-900 dark:border-neutral-700 flex items-center justify-center shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] text-text-main"
+        v-for="n in 6"
+        :key="n"
+        class="h-64 bg-neutral-100 dark:bg-neutral-800 border-2 border-neutral-300 dark:border-neutral-700 rounded-2xl animate-pulse"
+      />
+    </div>
+
+    <!-- Challenges Cards Grid -->
+    <div
+      v-else-if="challenges && challenges.length > 0"
+      class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+    >
+      <div
+        v-for="challenge in challenges"
+        :key="challenge.id"
+        class="bg-white dark:bg-neutral-900 border-2 border-neutral-900 dark:border-neutral-700 rounded-2xl p-6 shadow-[5px_5px_0px_0px_rgba(0,0,0,1)] dark:shadow-[5px_5px_0px_0px_rgba(255,255,255,0.15)] flex flex-col justify-between hover:translate-x-[-2px] hover:translate-y-[-2px] hover:shadow-[7px_7px_0px_0px_rgba(0,0,0,1)] transition-all"
       >
-        <svg
-          class="w-8 h-8 text-neutral-900 dark:text-neutral-100"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-          aria-hidden="true"
-        >
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
-        </svg>
-      </div>
+        <div>
+          <!-- Header Badges -->
+          <div class="flex flex-wrap items-center gap-2 mb-3">
+            <span class="px-2.5 py-0.5 bg-amber-100 dark:bg-amber-950/60 border border-amber-600 text-amber-900 dark:text-amber-300 rounded-full text-xs font-black uppercase">
+              {{ challenge.economic_sector }}
+            </span>
+            <span class="px-2.5 py-0.5 bg-blue-100 dark:bg-blue-950/60 border border-blue-600 text-blue-900 dark:text-blue-300 rounded-full text-xs font-bold">
+              {{ challenge.modality }}
+            </span>
+            <span class="px-2.5 py-0.5 bg-purple-100 dark:bg-purple-950/60 border border-purple-600 text-purple-900 dark:text-purple-300 rounded-full text-xs font-bold">
+              {{ challenge.difficulty_level }}
+            </span>
+          </div>
 
-      <h2 class="text-xl font-black text-text-main tracking-tight">
-        No hay oportunidades disponibles en este momento.
-      </h2>
+          <!-- Challenge Title -->
+          <h2 class="text-xl font-black text-neutral-900 dark:text-neutral-100 line-clamp-2 mb-2">
+            {{ challenge.title }}
+          </h2>
 
-      <p class="text-sm text-text-muted leading-relaxed max-w-md mx-auto">
-        Las empresas aliadas publican nuevos retos periódicamente para el semestre académico.
-      </p>
+          <!-- Description Preview -->
+          <p class="text-neutral-600 dark:text-neutral-400 text-xs sm:text-sm line-clamp-3 mb-4 font-normal">
+            {{ challenge.description }}
+          </p>
 
-      <div class="pt-2">
-        <button
-          type="button"
-          class="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-surface hover:bg-canvas text-text-main font-bold text-sm border-2 border-neutral-900 dark:border-neutral-700 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[1px] hover:translate-y-[1px] active:translate-x-[2px] active:translate-y-[2px] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-institutional-500"
-          @click="loadData"
-        >
-          <span>Actualizar lista</span>
-        </button>
+          <!-- Skills Badges -->
+          <div
+            v-if="challenge.required_skills && challenge.required_skills.length > 0"
+            class="flex flex-wrap gap-1.5 mb-4"
+          >
+            <span
+              v-for="skill in challenge.required_skills.slice(0, 4)"
+              :key="skill"
+              class="px-2 py-0.5 bg-neutral-100 dark:bg-neutral-800 border border-neutral-300 dark:border-neutral-700 rounded-md text-[11px] font-bold text-neutral-700 dark:text-neutral-300"
+            >
+              #{{ skill }}
+            </span>
+            <span
+              v-if="challenge.required_skills.length > 4"
+              class="px-1.5 py-0.5 text-[10px] font-black text-neutral-500"
+            >
+              +{{ challenge.required_skills.length - 4 }}
+            </span>
+          </div>
+        </div>
+
+        <!-- Footer / CTA -->
+        <div class="pt-4 border-t border-neutral-200 dark:border-neutral-800 flex items-center justify-between mt-2">
+          <span class="text-xs font-bold text-neutral-500 dark:text-neutral-400">
+            Semestre mín. {{ challenge.min_semester }}°
+          </span>
+          <NuxtLink
+            :to="`/challenges/${challenge.id}`"
+            class="px-3.5 py-2 bg-red-600 hover:bg-red-700 text-white font-black text-xs rounded-xl shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] transition-transform active:translate-x-0.5 active:translate-y-0.5"
+          >
+            Ver Detalles →
+          </NuxtLink>
+        </div>
       </div>
     </div>
 
-    <!-- 3.4. Cuadrícula de Retos Poblada -->
-    <div
-      v-else
-      class="space-y-8"
-    >
-      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8">
-        <ChallengeCard
-          v-for="challenge in challenges"
-          :key="challenge.id"
-          :challenge="challenge"
-        />
-      </div>
+    <!-- Reusable Empty State View (FRONTEND-TASK-10) -->
+    <CatalogEmptyState
+      v-else-if="!loading && !error && challenges && challenges.length === 0"
+      :active-filters="activeFilterItems"
+      :show-reset="activeFilterItems.length > 0"
+      @reset="handleReset"
+    />
 
-      <!-- 4. Paginación con UPagination de Nuxt UI 4.x -->
-      <nav
-        v-if="totalCount > currentSize"
-        aria-label="Paginación de oportunidades"
-        class="flex justify-center pt-4 pb-8"
+    <!-- Pagination Controls -->
+    <div
+      v-if="!loading && !error && challenges && challenges.length > 0 && pagination && pagination.pages > 1"
+      class="mt-12 flex items-center justify-center gap-3"
+    >
+      <button
+        type="button"
+        :disabled="pagination.page <= 1"
+        class="px-4 py-2 bg-white dark:bg-neutral-900 border-2 border-neutral-900 dark:border-neutral-700 rounded-xl font-bold text-xs disabled:opacity-40 disabled:cursor-not-allowed shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
+        @click="changePage(pagination.page - 1)"
       >
-        <UPagination
-          :page="currentPage"
-          :total="totalCount"
-          :items-per-page="currentSize"
-          :show-edges="true"
-          :sibling-count="1"
-          size="md"
-          @update:page="handlePageChange"
-        />
-      </nav>
+        ← Anterior
+      </button>
+      <span class="text-xs font-black text-neutral-700 dark:text-neutral-300 px-2">
+        Página {{ pagination.page }} de {{ pagination.pages }}
+      </span>
+      <button
+        type="button"
+        :disabled="pagination.page >= pagination.pages"
+        class="px-4 py-2 bg-white dark:bg-neutral-900 border-2 border-neutral-900 dark:border-neutral-700 rounded-xl font-bold text-xs disabled:opacity-40 disabled:cursor-not-allowed shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
+        @click="changePage(pagination.page + 1)"
+      >
+        Siguiente →
+      </button>
     </div>
   </div>
 </template>
