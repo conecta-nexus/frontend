@@ -15,14 +15,18 @@ function toggleTheme() {
 }
 
 const route = useRoute()
-const { isAuthenticated } = useAuth()
+const { isAuthenticated, userRole } = useAuth()
 
-const navLinks = [
-  { name: 'Inicio', href: '/' },
-  { name: 'Retos', href: '/#retos' },
-  { name: 'Para Empresas', href: '/#empresas' },
-  { name: 'Estudiantes UFPS', href: '/#estudiantes' },
-]
+const navLinks = computed(() => {
+  const links = [
+    { name: 'Inicio', href: '/' },
+    { name: 'Catálogo de Retos', href: '/challenges' },
+  ]
+  if (userRole.value === 'COMPANY') {
+    links.push({ name: 'Gestión de Retos', href: '/challenges/manage' })
+  }
+  return links
+})
 
 const authCta = computed(() => {
   if (isAuthenticated.value) {
