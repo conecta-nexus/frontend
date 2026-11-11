@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import type { ChallengeCatalogFilter, DifficultyLevel, Modality } from '~/types/challenge'
 
 withDefaults(
@@ -83,9 +83,9 @@ function syncFromRoute() {
   selectedKnowledgeArea.value = typeof q.knowledge_area === 'string' ? q.knowledge_area : ''
 
   if (typeof q.skill === 'string' && q.skill.trim()) {
-    skillsList.value = [q.skill.trim()]
+    skillsList.value = q.skill.split(',').map(s => s.trim()).filter(Boolean)
   } else if (Array.isArray(q.skill)) {
-    skillsList.value = q.skill.map(s => String(s).trim()).filter(Boolean)
+    skillsList.value = q.skill.flatMap(s => String(s).split(',').map(item => item.trim())).filter(Boolean)
   } else {
     skillsList.value = []
   }
@@ -132,7 +132,11 @@ async function applyFilters() {
   if (filters.skill) newQuery.skill = filters.skill
 
   // Only update route if query genuinely changed
-  await router.push({ query: newQuery })
+  const currentQueryStr = JSON.stringify(route.query)
+  const newQueryStr = JSON.stringify(newQuery)
+  if (currentQueryStr !== newQueryStr) {
+    await router.push({ query: newQuery })
+  }
   emit('filter-change', filters)
 }
 
@@ -215,6 +219,10 @@ watch(
 onMounted(() => {
   syncFromRoute()
 })
+
+onUnmounted(() => {
+  if (debounceTimer) clearTimeout(debounceTimer)
+})
 </script>
 
 <template>
@@ -245,6 +253,13 @@ onMounted(() => {
           class="w-full pl-11 pr-10 py-3 bg-neutral-50 dark:bg-neutral-800 border-2 border-neutral-900 dark:border-neutral-700 rounded-xl font-medium text-sm text-neutral-900 dark:text-neutral-100 placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-red-500 transition-all shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] dark:shadow-[2px_2px_0px_0px_rgba(255,255,255,0.1)]"
           @input="onSearchInput"
         >
+        <!-- Search Loading Spinner -->
+        <div
+          v-if="loading"
+          class="absolute inset-y-0 right-9 pr-1 flex items-center pointer-events-none"
+        >
+          <div class="w-4 h-4 border-2 border-red-600 border-t-transparent rounded-full animate-spin" />
+        </div>
         <button
           v-if="searchInput"
           type="button"
@@ -285,6 +300,14 @@ onMounted(() => {
             />
           </svg>
         </button>
+
+        <!-- Total Results Indicator -->
+        <div
+          v-if="totalResults > 0 && !loading"
+          class="hidden md:flex items-center gap-1.5 px-3 py-2 bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 font-bold text-xs rounded-xl border-2 border-neutral-900 dark:border-neutral-700 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] dark:shadow-[2px_2px_0px_0px_rgba(255,255,255,0.1)]"
+        >
+          <span>{{ totalResults }} {{ totalResults === 1 ? 'oportunidad' : 'oportunidades' }}</span>
+        </div>
 
         <!-- Active Filter Badge Counter (Desktop) -->
         <div
