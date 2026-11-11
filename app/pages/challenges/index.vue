@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { onMounted, watch } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import type { ChallengeCatalogFilter } from '~/types/challenge'
+import { useChallenges } from '~/composables/useChallenges'
 import CatalogFilterBar from '~/components/challenges/CatalogFilterBar.vue'
+import CatalogEmptyState, { type ActiveFilterItem } from '~/components/challenges/CatalogEmptyState.vue'
 
 useHead({
   title: 'Catálogo de Desafíos Empresariales | Conecta Nexus UFPS',
@@ -16,6 +18,88 @@ useHead({
 const route = useRoute()
 const router = useRouter()
 const { challenges, pagination, loading, error, fetchCatalog } = useChallenges()
+
+// Formatted active filters derived strictly from current URL query parameters
+const activeFilterItems = computed<ActiveFilterItem[]>(() => {
+  const items: ActiveFilterItem[] = []
+  const q = route.query
+
+  if (typeof q.q === 'string' && q.q.trim()) {
+    items.push({
+      key: 'q',
+      label: 'Búsqueda',
+      value: `"${q.q.trim()}"`,
+    })
+  }
+
+  const sector = typeof q.sector === 'string' ? q.sector : (typeof q.economic_sector === 'string' ? q.economic_sector : '')
+  if (sector.trim()) {
+    items.push({
+      key: 'sector',
+      label: 'Sector',
+      value: sector.trim(),
+    })
+  }
+
+  const modalityMap: Record<string, string> = {
+    REMOTE: 'Remoto',
+    HYBRID: 'Híbrido',
+    ON_SITE: 'Presencial',
+  }
+  if (typeof q.modality === 'string' && modalityMap[q.modality]) {
+    items.push({
+      key: 'modality',
+      label: 'Modalidad',
+      value: modalityMap[q.modality],
+    })
+  }
+
+  const difficultyMap: Record<string, string> = {
+    BEGINNER: 'Inicial / Básico',
+    INTERMEDIATE: 'Intermedio',
+    ADVANCED: 'Avanzado',
+  }
+  const difficulty = typeof q.difficulty === 'string' ? q.difficulty : (typeof q.difficulty_level === 'string' ? q.difficulty_level : '')
+  if (difficulty && difficultyMap[difficulty]) {
+    items.push({
+      key: 'difficulty',
+      label: 'Dificultad',
+      value: difficultyMap[difficulty],
+    })
+  }
+
+  if (typeof q.knowledge_area === 'string' && q.knowledge_area.trim()) {
+    items.push({
+      key: 'knowledge_area',
+      label: 'Área',
+      value: q.knowledge_area.trim(),
+    })
+  }
+
+  if (typeof q.skill === 'string' && q.skill.trim()) {
+    const skills = q.skill.split(',').map(s => s.trim()).filter(Boolean)
+    skills.forEach((s, idx) => {
+      items.push({
+        key: `skill-${idx}`,
+        label: 'Habilidad',
+        value: `#${s}`,
+      })
+    })
+  }
+
+  if (typeof q.min_semester === 'string' && q.min_semester.trim()) {
+    const sem = parseInt(q.min_semester, 10)
+    if (!Number.isNaN(sem)) {
+      items.push({
+        key: 'min_semester',
+        label: 'Semestre mín.',
+        value: `${sem}°`,
+      })
+    }
+  }
+
+  return items
+})
 
 // Fetch opportunities using route query parameters
 async function loadCatalog() {
@@ -37,13 +121,16 @@ async function loadCatalog() {
   }
 }
 
-function handleFilterChange() {
-  loadCatalog()
-}
-
+// Reset all filters and synchronize with route without duplicate requests
 function handleReset() {
-  router.push({ query: {} })
-  loadCatalog()
+  const hasActiveQuery = Object.keys(route.query).length > 0
+  if (hasActiveQuery) {
+    // Changing route.query will trigger the route watcher once
+    router.push({ query: {} })
+  } else {
+    // If route.query was already empty, push is a no-op so trigger loadCatalog directly
+    loadCatalog()
+  }
 }
 
 function changePage(newPage: number) {
@@ -55,6 +142,7 @@ function changePage(newPage: number) {
   })
 }
 
+// Single source of truth for URL query changes
 watch(
   () => route.query,
   () => {
@@ -87,8 +175,6 @@ onMounted(() => {
     <CatalogFilterBar
       :loading="loading"
       :total-results="pagination?.total || 0"
-      @filter-change="handleFilterChange"
-      @reset="handleReset"
     />
 
     <!-- Error Banner -->
@@ -191,32 +277,17 @@ onMounted(() => {
       </div>
     </div>
 
-    <!-- Empty State Fallback (To be extended by FRONTEND-TASK-10 CatalogEmptyState.vue) -->
-    <div
-      v-else-if="!loading && challenges && challenges.length === 0"
-      class="w-full bg-neutral-50 dark:bg-neutral-900 border-2 border-dashed border-neutral-400 dark:border-neutral-700 rounded-3xl p-12 text-center shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] dark:shadow-[4px_4px_0px_0px_rgba(255,255,255,0.05)]"
-    >
-      <div class="w-16 h-16 mx-auto mb-4 bg-amber-100 dark:bg-amber-950/60 border-2 border-amber-600 rounded-2xl flex items-center justify-center text-3xl shadow-[3px_3px_0px_0px_rgba(217,119,6,1)]">
-        🔍
-      </div>
-      <h3 class="text-2xl font-black text-neutral-900 dark:text-neutral-100 mb-2">
-        No se encontraron desafíos
-      </h3>
-      <p class="text-sm text-neutral-600 dark:text-neutral-400 max-w-md mx-auto mb-6">
-        No hay convocatorias abiertas que coincidan con los filtros seleccionados. Intenta ajustar la búsqueda o restablecer los criterios.
-      </p>
-      <button
-        type="button"
-        class="px-5 py-2.5 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 font-black text-sm rounded-xl shadow-[3px_3px_0px_0px_rgba(220,38,38,1)] transition-transform active:translate-x-0.5 active:translate-y-0.5"
-        @click="handleReset"
-      >
-        Restablecer todos los filtros
-      </button>
-    </div>
+    <!-- Reusable Empty State View (FRONTEND-TASK-10) -->
+    <CatalogEmptyState
+      v-else-if="!loading && !error && challenges && challenges.length === 0"
+      :active-filters="activeFilterItems"
+      :show-reset="activeFilterItems.length > 0"
+      @reset="handleReset"
+    />
 
     <!-- Pagination Controls -->
     <div
-      v-if="pagination && pagination.pages > 1"
+      v-if="!loading && !error && challenges && challenges.length > 0 && pagination && pagination.pages > 1"
       class="mt-12 flex items-center justify-center gap-3"
     >
       <button
