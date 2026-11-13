@@ -8,7 +8,17 @@ import type {
   ChallengeCreatePayload,
   ChallengeUpdatePayload,
   PaginatedResponse,
+  PublicChallengeDetail,
 } from '~/types/challenge'
+
+type PublicAttachmentResponse = Omit<ChallengeAttachment, 'challenge_id'> & {
+  challenge_id?: string
+  download_url: string
+}
+
+type PublicChallengeDetailResponse = Omit<PublicChallengeDetail, 'attachments'> & {
+  attachments: PublicAttachmentResponse[]
+}
 
 export function useChallenges() {
   const { apiFetch } = useApi()
@@ -79,6 +89,35 @@ export function useChallenges() {
     } catch (err: unknown) {
       const fetchError = err as { data?: { detail?: string }; message?: string }
       error.value = fetchError?.data?.detail || fetchError?.message || 'Failed to fetch challenge'
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
+  /**
+   * Fetch the privacy-safe public projection for an open catalog challenge.
+   */
+  async function getCatalogChallenge(id: string): Promise<PublicChallengeDetail> {
+    loading.value = true
+    error.value = null
+    try {
+      const response = await apiFetch<PublicChallengeDetailResponse>(
+        `/challenges/catalog/${encodeURIComponent(id)}`,
+        { method: 'GET' },
+      )
+      const normalized: PublicChallengeDetail = {
+        ...response,
+        attachments: response.attachments.map(attachment => ({
+          ...attachment,
+          challenge_id: attachment.challenge_id || response.id,
+        })),
+      }
+      currentChallenge.value = normalized
+      return normalized
+    } catch (err: unknown) {
+      const fetchError = err as { data?: { detail?: string }; message?: string }
+      error.value = fetchError?.data?.detail || fetchError?.message || 'Failed to fetch public challenge'
       throw err
     } finally {
       loading.value = false
@@ -316,6 +355,7 @@ export function useChallenges() {
     clearCurrentChallenge,
     createChallenge,
     getChallenge,
+    getCatalogChallenge,
     updateChallenge,
     closeChallenge,
     fetchCompanyChallenges,
