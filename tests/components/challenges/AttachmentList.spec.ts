@@ -103,6 +103,31 @@ describe('AttachmentList', () => {
     )
   })
 
+  it('uses the signed URL included in a public catalog attachment', async () => {
+    const previewWindow = {
+      opener: {},
+      location: { href: 'about:blank' },
+      close: vi.fn(),
+    }
+    vi.spyOn(window, 'open').mockReturnValue(previewWindow as unknown as Window)
+    const publicAttachment: ChallengeAttachment = {
+      ...attachments[0]!,
+      download_url: 'https://storage.example.com/signed/public-catalog-file',
+    }
+    const wrapper = createWrapper([publicAttachment], false)
+
+    await wrapper
+      .get('[aria-label="Descargar technical-specification.pdf"]')
+      .trigger('click')
+    await flushPromises()
+
+    expect(challengeMocks.getAttachmentDownloadUrl).not.toHaveBeenCalled()
+    expect(previewWindow.opener).toBeNull()
+    expect(previewWindow.location.href).toBe(
+      'https://storage.example.com/signed/public-catalog-file',
+    )
+  })
+
   it('closes the preview tab and shows feedback when download fails', async () => {
     challengeMocks.getAttachmentDownloadUrl.mockRejectedValueOnce(
       new Error('Signed URL service unavailable'),

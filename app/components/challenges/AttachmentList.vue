@@ -63,17 +63,21 @@ async function handleDownload(attachment: ChallengeAttachment) {
 
   downloadingId.value = attachment.id
   try {
-    const response = await getAttachmentDownloadUrl(
-      attachment.challenge_id,
-      attachment.id,
-    )
-    if (!response.download_url) {
+    let downloadUrl = attachment.download_url
+    if (!downloadUrl) {
+      const response = await getAttachmentDownloadUrl(
+        attachment.challenge_id,
+        attachment.id,
+      )
+      downloadUrl = response.download_url
+    }
+    if (!downloadUrl) {
       throw new Error('El servicio no devolvió un enlace de descarga válido.')
     }
     if (!previewWindow) {
       throw new Error('El navegador bloqueó la nueva pestaña de descarga.')
     }
-    previewWindow.location.href = response.download_url
+    previewWindow.location.href = downloadUrl
   } catch (error: unknown) {
     previewWindow?.close()
     toast.add({
