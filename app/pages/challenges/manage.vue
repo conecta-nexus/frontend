@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import ChallengeClosureModal from '~/components/challenges/ChallengeClosureModal.vue'
 import CompanyChallengeTable, {
   type CompanyChallenge,
 } from '~/components/challenges/CompanyChallengeTable.vue'
@@ -103,6 +104,16 @@ const filteredChallenges = computed(() => {
   )
 })
 
+const challengePendingClosure = computed(() => {
+  const challengeId = typeof route.query.close === 'string'
+    ? route.query.close
+    : null
+  if (!challengeId) return null
+  return portfolio.value.find(challenge => challenge.id === challengeId) ?? null
+})
+
+const isClosureModalOpen = computed(() => challengePendingClosure.value !== null)
+
 function tabCount(status: DashboardStatus): number {
   if (status === 'ALL') return portfolio.value.length
   return portfolio.value.filter(challenge => challenge.status === status).length
@@ -172,6 +183,29 @@ function requestClosure(challenge: CompanyChallenge) {
       ...route.query,
       close: challenge.id,
     },
+  })
+}
+
+function dismissClosureModal() {
+  const { close: _close, ...query } = route.query
+  router.replace({ query })
+}
+
+function handleChallengeClosed(challenge: CompanyChallenge) {
+  const index = portfolio.value.findIndex(item => item.id === challenge.id)
+  if (index !== -1) {
+    portfolio.value[index] = {
+      ...challenge,
+      applications_count: portfolio.value[index]?.applications_count,
+    }
+  }
+
+  dismissClosureModal()
+  toast.add({
+    title: 'Reto cerrado',
+    description: `${challenge.title} fue retirado del catálogo público.`,
+    color: 'success',
+    icon: 'i-lucide-check-circle',
   })
 }
 
@@ -312,5 +346,12 @@ onMounted(() => {
         />
       </section>
     </div>
+
+    <ChallengeClosureModal
+      :challenge="challengePendingClosure"
+      :is-open="isClosureModalOpen"
+      @update:is-open="isOpen => !isOpen && dismissClosureModal()"
+      @closed="handleChallengeClosed"
+    />
   </main>
 </template>
