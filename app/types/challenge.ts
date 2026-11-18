@@ -67,6 +67,15 @@ export interface Challenge {
 }
 
 /**
+ * Privacy-safe challenge detail returned by the public catalog endpoint.
+ * Corporate contact channels are intentionally absent from this projection.
+ */
+export interface PublicChallengeDetail extends Challenge {
+  company_name?: string
+  attachments: ChallengeAttachment[]
+}
+
+/**
  * Payload required to create a new challenge (HU-06)
  */
 export interface ChallengeCreatePayload {
