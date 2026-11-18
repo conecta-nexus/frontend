@@ -7,6 +7,7 @@ import type { CompanyChallenge } from '~/components/challenges/CompanyChallengeT
 const fetchCompanyChallenges = vi.fn()
 const updateChallenge = vi.fn()
 const routerPush = vi.fn()
+const routerReplace = vi.fn()
 const addToast = vi.fn()
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -118,12 +119,24 @@ const CompanyChallengeTableStub = {
   `,
 }
 
+const ChallengeClosureModalStub = {
+  name: 'ChallengeClosureModal',
+  props: ['challenge', 'isOpen'],
+  emits: ['update:isOpen', 'closed'],
+  template: `
+    <div v-if="isOpen" data-testid="closure-modal">
+      <span data-testid="closure-challenge-id">{{ challenge?.id }}</span>
+    </div>
+  `,
+}
+
 function createWrapper() {
   return mount(ManagePage, {
     global: {
       stubs: {
         NuxtLink: NuxtLinkStub,
         CompanyChallengeTable: CompanyChallengeTableStub,
+        ChallengeClosureModal: ChallengeClosureModalStub,
       },
     },
   })
@@ -136,9 +149,10 @@ describe('Company challenge management page', () => {
     userRole.value = 'COMPANY'
     route.query = {}
     routerPush.mockReset()
+    routerReplace.mockReset()
     addToast.mockReset()
     fetchCompanyChallenges.mockReset().mockResolvedValue({
-      items: challenges,
+      items: challenges.map(challenge => ({ ...challenge })),
       total: challenges.length,
       page: 1,
       limit: 100,
@@ -152,7 +166,10 @@ describe('Company challenge management page', () => {
     vi.stubGlobal('definePageMeta', vi.fn())
     vi.stubGlobal('useHead', vi.fn())
     vi.stubGlobal('useRoute', () => route)
-    vi.stubGlobal('useRouter', () => ({ push: routerPush }))
+    vi.stubGlobal('useRouter', () => ({
+      push: routerPush,
+      replace: routerReplace,
+    }))
     vi.stubGlobal('useToast', () => ({ add: addToast }))
     vi.stubGlobal('navigateTo', vi.fn())
   })
@@ -220,6 +237,29 @@ describe('Company challenge management page', () => {
     })
   })
 
+  it('opens the requested closure modal and updates the portfolio after closing', async () => {
+    route.query = { close: 'open-1' }
+    const wrapper = createWrapper()
+    await flushPromises()
+
+    const closureModal = wrapper.getComponent(ChallengeClosureModalStub)
+    expect(wrapper.get('[data-testid="closure-challenge-id"]').text()).toBe('open-1')
+
+    closureModal.vm.$emit('closed', {
+      ...challenges[1],
+      status: 'CLOSED',
+    })
+    await flushPromises()
+
+    expect(routerReplace).toHaveBeenCalledWith({ query: {} })
+    expect(addToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Reto cerrado',
+      color: 'success',
+    }))
+    expect(wrapper.get('[aria-label="Filtrar por Abiertos"]').text()).toContain('0')
+    expect(wrapper.get('[aria-label="Filtrar por Cerrados"]').text()).toContain('2')
+  })
+
   it('shows an error state and allows retrying the request', async () => {
     fetchCompanyChallenges.mockRejectedValueOnce(new Error('Gateway unavailable'))
     const wrapper = createWrapper()
@@ -228,7 +268,7 @@ describe('Company challenge management page', () => {
     expect(wrapper.get('[role="alert"]').text()).toContain('Gateway unavailable')
 
     fetchCompanyChallenges.mockResolvedValueOnce({
-      items: challenges,
+      items: challenges.map(challenge => ({ ...challenge })),
       total: challenges.length,
       page: 1,
       limit: 100,
