@@ -318,9 +318,16 @@ function formatDate(isoDate?: string | null): string {
           </div>
         </div>
 
-        <div class="flex items-center gap-3 w-full sm:w-auto shrink-0">
+        <div class="flex flex-wrap items-center gap-3 w-full lg:w-auto lg:shrink-0">
           <NuxtLink
-            to="/"
+            v-if="userRole === 'COMPANY'"
+            to="/challenges/manage"
+            class="flex-1 sm:flex-none rounded-xl border-2 border-neutral-900 bg-institutional-600 px-4 py-2.5 text-center text-sm font-bold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-institutional-500 dark:border-neutral-700"
+          >
+            Gestionar retos
+          </NuxtLink>
+          <NuxtLink
+            to="/challenges"
             class="flex-1 sm:flex-none text-center px-4 py-2.5 rounded-xl bg-surface hover:bg-neutral-100 dark:hover:bg-neutral-800 text-text-main font-bold text-sm border-2 border-neutral-900 dark:border-neutral-700 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[1px] hover:translate-y-[1px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-institutional-500 transition-all"
           >
             Explorar Retos

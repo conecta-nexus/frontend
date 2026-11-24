@@ -60,6 +60,7 @@ export function useChallenges() {
     try {
       const response = await apiFetch<Challenge>('/challenges/', {
         method: 'POST',
+        retry: 0,
         body: payload,
       })
       currentChallenge.value = response
@@ -72,6 +73,16 @@ export function useChallenges() {
     } finally {
       loading.value = false
     }
+  }
+
+  async function publishChallenge(id: string): Promise<Challenge> {
+    const response = await apiFetch<Challenge>(`/challenges/${encodeURIComponent(id)}/publish`, {
+      method: 'POST',
+      retry: 0,
+    })
+    currentChallenge.value = response
+    challenges.value = challenges.value.map(challenge => challenge.id === id ? response : challenge)
+    return response
   }
 
   /**
@@ -354,6 +365,7 @@ export function useChallenges() {
     clearError,
     clearCurrentChallenge,
     createChallenge,
+    publishChallenge,
     getChallenge,
     getCatalogChallenge,
     updateChallenge,
