@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { catalogDifficultyLabels, catalogModalityLabels, catalogRequestKey, catalogTerms, readCatalogQuery, resetCatalogQuery } from '~/utils/catalogQuery'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { catalogDifficultyLabels, catalogModalityLabels, catalogRequestKey, catalogTerms, readCatalogQuery } from '~/utils/catalogQuery'
 import { useChallenges } from '~/composables/useChallenges'
 import ChallengeCard from '~/components/challenges/ChallengeCard.vue'
 import CatalogFilterBar from '~/components/challenges/CatalogFilterBar.vue'
-import CatalogEmptyState, { type ActiveFilterItem } from '~/components/challenges/CatalogEmptyState.vue'
+import CatalogEmptyState, { type ActiveFilters } from '~/components/challenges/CatalogEmptyState.vue'
 
 useHead({
   title: 'Catálogo de Desafíos Empresariales | Conecta Nexus UFPS',
@@ -24,20 +24,50 @@ const mounted = ref(false)
 const isLoading = computed(() => !mounted.value || catalogLoading.value)
 
 const filters = computed(() => readCatalogQuery(route.query))
+const filterBar = ref<InstanceType<typeof CatalogFilterBar> | null>(null)
+const catalogHeading = ref<HTMLElement | null>(null)
+let resetting = false
+const emptyMetadata = computed(() => catalog.value?.empty_state)
+const totalActiveCount = computed(() => {
+  const count = emptyMetadata.value?.total_active_challenges
+  return typeof count === 'number' && Number.isSafeInteger(count) && count >= 0 ? count : undefined
+})
+const emptyDescription = computed(() => {
+  const metadata = emptyMetadata.value
+  if (totalActiveCount.value !== 0
+    && metadata?.code === 'NO_MATCHING_CHALLENGES'
+    && metadata.message === 'No challenges match your selected search criteria.') {
+    return 'No hay convocatorias abiertas que coincidan con los filtros seleccionados. Prueba con menos filtros o explora el catálogo completo.'
+  }
+  return undefined
+})
 
-const activeFilterItems = computed<ActiveFilterItem[]>(() => {
-  const items: ActiveFilterItem[] = []
-  const { q, sector, modality, difficulty, knowledge_area, skill, min_semester } = filters.value
-
-  if (q) items.push({ key: 'q', label: 'Búsqueda', value: `"${q}"` })
-  if (sector) items.push({ key: 'sector', label: 'Sector', value: sector })
-  if (modality) items.push({ key: 'modality', label: 'Modalidad', value: catalogModalityLabels[modality] })
-  if (difficulty) items.push({ key: 'difficulty', label: 'Dificultad', value: catalogDifficultyLabels[difficulty] })
-  if (knowledge_area) items.push({ key: 'knowledge_area', label: 'Área', value: knowledge_area })
-  catalogTerms(skill).forEach((s, index) => {
-    items.push({ key: `skill-${index}`, label: 'Habilidad', value: `#${s}` })
+const activeFilters = computed<ActiveFilters>(() => {
+  const items: ActiveFilters = {}
+  const reported = emptyMetadata.value?.query_params
+  const backendFilters = readCatalogQuery({
+    ...reported,
+    min_semester: typeof reported?.min_semester === 'number' ? String(reported.min_semester) : null,
   })
-  if (min_semester) items.push({ key: 'min_semester', label: 'Semestre mín.', value: `${min_semester}°` })
+  const {
+    q = filters.value.q,
+    sector = filters.value.sector,
+    modality = filters.value.modality,
+    difficulty = filters.value.difficulty,
+    knowledge_area = filters.value.knowledge_area,
+    skill = filters.value.skill,
+    min_semester = filters.value.min_semester,
+  } = backendFilters
+
+  if (q) items.q = { label: 'Búsqueda', value: `"${q}"` }
+  if (sector) items.sector = { label: 'Sector', value: sector }
+  if (modality) items.modality = { label: 'Modalidad', value: catalogModalityLabels[modality] }
+  if (difficulty) items.difficulty = { label: 'Dificultad', value: catalogDifficultyLabels[difficulty] }
+  if (knowledge_area) items.knowledge_area = { label: 'Área de conocimiento', value: catalogTerms(knowledge_area).join(', ') }
+  catalogTerms(skill).forEach((s, index) => {
+    items[`skill-${index}`] = { label: 'Habilidad', value: `#${s}` }
+  })
+  if (min_semester) items.min_semester = { label: 'Semestre mín.', value: `${min_semester}°` }
 
   return items
 })
@@ -55,15 +85,21 @@ async function loadCatalog() {
   }
 }
 
-// Reset all filters and synchronize with route without duplicate requests
-function handleReset() {
-  const hasActiveQuery = Object.keys(route.query).length > 0
-  if (hasActiveQuery) {
-    // Changing route.query will trigger the route watcher once
-    router.push({ query: resetCatalogQuery(route.query) })
-  } else {
-    // If route.query was already empty, push is a no-op so trigger loadCatalog directly
-    loadCatalog()
+async function handleReset() {
+  if (resetting) return
+  resetting = true
+  // Only a changed request key triggers the route watcher.
+  const reloadDirectly = catalogRequestKey(filters.value) === catalogRequestKey(readCatalogQuery({}))
+
+  try {
+    filterBar.value?.clearDraftFilters?.()
+    if (Object.keys(route.query).length && await router.push({ query: {} })) return
+    const refresh = reloadDirectly ? loadCatalog() : undefined
+    await nextTick()
+    catalogHeading.value?.focus()
+    await refresh
+  } finally {
+    resetting = false
   }
 }
 
@@ -89,7 +125,11 @@ onMounted(() => {
   <div class="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-8 min-h-[calc(100vh-140px)]">
     <!-- Header Section -->
     <div class="mb-8">
-      <h1 class="text-3xl sm:text-4xl lg:text-5xl font-black text-neutral-900 dark:text-neutral-100 tracking-tight">
+      <h1
+        ref="catalogHeading"
+        tabindex="-1"
+        class="text-3xl sm:text-4xl lg:text-5xl font-black text-neutral-900 dark:text-neutral-100 tracking-tight"
+      >
         Catálogo de Desafíos Empresariales
       </h1>
       <p class="mt-2 text-sm sm:text-base text-neutral-600 dark:text-neutral-400 max-w-3xl font-medium">
@@ -99,6 +139,7 @@ onMounted(() => {
 
     <!-- Reactive Filter Bar Component -->
     <CatalogFilterBar
+      ref="filterBar"
       :loading="isLoading"
       :total-results="catalog?.total ?? 0"
     />
@@ -186,9 +227,11 @@ onMounted(() => {
     </div>
 
     <CatalogEmptyState
-      v-else-if="!isLoading && !error && challenges.length === 0"
-      :active-filters="activeFilterItems"
-      :show-reset="activeFilterItems.length > 0"
+      v-else-if="!isLoading && !error && catalog?.total === 0 && challenges.length === 0"
+      :active-filters="activeFilters"
+      :description="emptyDescription"
+      :total-active-count="totalActiveCount"
+      :show-reset="Object.keys(activeFilters).length > 0 && emptyMetadata?.suggested_reset !== false"
       @reset="handleReset"
     />
 

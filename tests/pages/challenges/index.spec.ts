@@ -6,11 +6,11 @@ import IndexPage from '~/pages/challenges/index.vue'
 import ChallengeCard from '~/components/challenges/ChallengeCard.vue'
 import CatalogEmptyState from '~/components/challenges/CatalogEmptyState.vue'
 import CatalogFilterBar from '~/components/challenges/CatalogFilterBar.vue'
-import type { ChallengeCatalogItem } from '~/types/challenge'
+import type { ChallengeCatalogItem, ChallengeCatalogResponse } from '~/types/challenge'
 
 // Deterministic mock state for useChallenges
 const mockChallenges = ref<ChallengeCatalogItem[]>([])
-const mockPagination = ref<{ total: number; page: number; pages: number; limit: number } | null>(null)
+const mockPagination = ref<Omit<ChallengeCatalogResponse, 'items'> | null>(null)
 const mockCatalog = computed(() => mockPagination.value && {
   ...mockPagination.value,
   items: mockChallenges.value,
@@ -291,15 +291,12 @@ describe('Challenges Index Page', () => {
     expect(emptyState.exists()).toBe(true)
     expect(emptyState.props('showReset')).toBe(true)
 
-    const activeFilters = emptyState.props('activeFilters')
-    expect(activeFilters).toHaveLength(3)
-    expect(activeFilters).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ key: 'q', label: 'Búsqueda', value: '"React"' }),
-        expect.objectContaining({ key: 'modality', label: 'Modalidad', value: 'Remoto' }),
-        expect.objectContaining({ key: 'sector', label: 'Sector', value: 'Tecnología y Software' }),
-      ]),
-    )
+    expect(emptyState.props('activeFilters')).toEqual({
+      q: { label: 'Búsqueda', value: '"React"' },
+      sector: { label: 'Sector', value: 'Tecnología y Software' },
+      modality: { label: 'Modalidad', value: 'Remoto' },
+    })
+    expect(emptyState.get('h2').text()).toBe('No hay desafíos que coincidan con los filtros seleccionados')
   })
 
   it('handles reset action cleanly by pushing empty query and preventing duplicate fetch requests', async () => {
@@ -545,5 +542,82 @@ describe('Challenges Index Page', () => {
     expect(mockRouterPush).toHaveBeenCalledExactlyOnceWith({ query: { skill: 'Vue' } })
     expect(mockFetchCatalog).toHaveBeenCalledTimes(2)
     expect(mockFetchCatalog).toHaveBeenLastCalledWith(expect.objectContaining({ q: undefined, skill: 'Vue', page: 1 }))
+  })
+
+  it('uses backend metadata for the count, localized message and every reported filter', async () => {
+    mockRoute.query = { q: 'DRAFT', modality: 'ON_SITE' }
+    mockPagination.value = {
+      total: 0, page: 1, pages: 1, limit: 10,
+      empty_state: {
+        code: 'NO_MATCHING_CHALLENGES',
+        message: 'No challenges match your selected search criteria.',
+        query_params: {
+          q: 'Backend search', economic_sector: 'Tecnología', modality: 'REMOTE',
+          difficulty_level: 'ADVANCED', skills: ['Vue', 'PostgreSQL'],
+          knowledge_areas: ['Software', 'Redes'], min_semester: 6,
+        },
+        total_active_challenges: 14,
+        suggested_reset: false,
+      },
+    }
+    const page = mountCatalog()
+    await page.vm.$nextTick()
+    const empty = page.getComponent(CatalogEmptyState)
+    expect(empty.props('totalActiveCount')).toBe(14)
+    expect(empty.text()).toContain('Prueba con menos filtros')
+    expect(empty.get('h2').text()).toBe('No hay desafíos que coincidan con los filtros seleccionados')
+    expect(empty.findAll('li').map(item => item.text())).toEqual([
+      'Búsqueda: "Backend search"', 'Sector: Tecnología', 'Modalidad: Remoto', 'Dificultad: Avanzado',
+      'Área de conocimiento: Software, Redes', 'Habilidad: #Vue', 'Habilidad: #PostgreSQL', 'Semestre mín.: 6°',
+    ])
+    expect(empty.findAll('button').map(button => button.text())).toEqual(['Explorar todas las oportunidades abiertas'])
+  })
+
+  it('preserves filter guidance with partial metadata and switches to the confirmed empty catalog copy', async () => {
+    mockRoute.query = { q: 'Vue', skill: 'Python' }
+    mockPagination.value = {
+      total: 0, page: 1, pages: 1, limit: 10,
+      empty_state: { query_params: { q: 'Vue' } },
+    }
+    const page = mountCatalog()
+    await page.vm.$nextTick()
+    const empty = page.getComponent(CatalogEmptyState)
+    expect(empty.text()).toContain('Habilidad: #Python')
+    expect(empty.text()).toContain('El catálogo no informó cuántas oportunidades están abiertas.')
+    expect(empty.props('totalActiveCount')).toBeUndefined()
+    mockPagination.value.empty_state = { total_active_challenges: 0 }
+    await page.vm.$nextTick()
+    expect(empty.get('h2').text()).toBe('No hay oportunidades abiertas')
+  })
+
+  it.each([0, 1])('clears URL, controls, pending search and pagination once with empty-state action %i', async (index) => {
+    vi.useFakeTimers()
+    mockRoute.query = { q: 'Cloud', modality: 'REMOTE', page: '3', page_size: '2', unknown: 'remove' }
+    const page = mountCatalog()
+    await page.vm.$nextTick()
+    await page.get(searchInput).setValue('Pending term')
+    await page.getComponent(CatalogEmptyState).findAll('button')[index]!.trigger('click')
+    await vi.advanceTimersByTimeAsync(400)
+    expect(mockRouterPush).toHaveBeenCalledExactlyOnceWith({ query: {} })
+    expect(mockFetchCatalog).toHaveBeenCalledTimes(2)
+    expect(mockFetchCatalog).toHaveBeenLastCalledWith(expect.objectContaining({
+      q: undefined, modality: undefined, page: 1, limit: 10,
+    }))
+    expect(page.get<HTMLInputElement>(searchInput).element.value).toBe('')
+    expect(page.getComponent(CatalogFilterBar).findAll('select')[1]!.element.value).toBe('')
+  })
+
+  it.each<LocationQuery>([{}, { page: '1', limit: '10', unknown: 'clear' }])('reloads once when the effective query is unchanged (%j)', async (query) => {
+    vi.useFakeTimers()
+    mockRoute.query = query
+    const page = mountCatalog()
+    await page.vm.$nextTick()
+    await page.get(searchInput).setValue('Pending term')
+    await page.getComponent(CatalogEmptyState).get('button').trigger('click')
+    await vi.advanceTimersByTimeAsync(400)
+    expect(mockRouterPush).toHaveBeenCalledTimes(Object.keys(query).length ? 1 : 0)
+    expect(mockFetchCatalog).toHaveBeenCalledTimes(2)
+    expect(mockFetchCatalog).toHaveBeenLastCalledWith(expect.objectContaining({ q: undefined, page: 1, limit: 10 }))
+    expect(page.get<HTMLInputElement>(searchInput).element.value).toBe('')
   })
 })
