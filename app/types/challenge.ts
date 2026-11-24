@@ -67,6 +67,16 @@ export interface Challenge {
 }
 
 /**
+ * Discovery card returned by the public catalog listing.
+ */
+export interface ChallengeCatalogItem extends Pick<Challenge,
+  'id' | 'company_id' | 'title' | 'difficulty_level' | 'modality' | 'min_semester' |
+  'economic_sector' | 'required_skills' | 'knowledge_areas' | 'created_at'> {
+  description_snippet: string
+  company_name?: string | null
+}
+
+/**
  * Privacy-safe challenge detail returned by the public catalog endpoint.
  * Corporate contact channels are intentionally absent from this projection.
  */

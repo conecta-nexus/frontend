@@ -34,54 +34,39 @@ function onKeydown(event: KeyboardEvent, currentIndex: number) {
   }
 }
 
-const challenges = [
+const challengeExamples = [
   {
-    id: 1,
     category: 'iot',
     categoryLabel: 'IoT & Borde',
     title: 'Red de Telemetría y Sensores IoT para Cultivos Locales',
-    company: 'AgroTech Cúcuta S.A.S.',
-    verified: true,
     description: 'Diseño de nodos sensores de bajo consumo y dashboard web para monitoreo hídrico en tiempo real para agricultores del departamento.',
     semester: 'Semestres 7° a 10°',
-    spots: '3 cupos estudiantes',
-    duration: '16 semanas (1 Semestre)',
     stack: ['ESP32', 'FastAPI', 'Vue 3', 'MQTT'],
     tagColor: 'bg-pastel-mint dark:bg-pastel-mint/20 text-neutral-900 dark:text-neutral-100',
   },
   {
-    id: 2,
     category: 'web',
     categoryLabel: 'Cloud & Microservicios',
     title: 'Microservicio de Facturación Electrónica DIAN y Gestión de Inventarios',
-    company: 'Distribuidora del Norte PYME',
-    verified: true,
     description: 'Automatización de emisión de comprobantes fiscales electrónicos DIAN e integración con inventario multi-bodega en tiempo real.',
     semester: 'Semestres 8° a 10°',
-    spots: '2 cupos estudiantes',
-    duration: '16 semanas (1 Semestre)',
     stack: ['Django DRF', 'PostgreSQL', 'Docker', 'Nuxt 4'],
     tagColor: 'bg-pastel-coral dark:bg-pastel-coral/20 text-neutral-900 dark:text-neutral-100',
   },
   {
-    id: 3,
     category: 'ai',
     categoryLabel: 'IA & Analítica',
     title: 'Motor de Recomendación y Detección de Fugas de Cartera con Machine Learning',
-    company: 'Fintech Regional Oriente',
-    verified: true,
     description: 'Algoritmo de predicción temprana de mora y scoring crediticio adaptado a comerciantes informales de Cúcuta.',
     semester: 'Semestres 8° a 10°',
-    spots: '4 cupos estudiantes',
-    duration: '16 semanas (1 Semestre)',
     stack: ['Python', 'Scikit-Learn', 'FastAPI', 'PostgreSQL'],
     tagColor: 'bg-pastel-blue dark:bg-pastel-blue/20 text-neutral-900 dark:text-neutral-100',
   },
 ]
 
 const filteredChallenges = computed(() => {
-  if (activeCategory.value === 'all') return challenges
-  return challenges.filter(c => c.category === activeCategory.value)
+  if (activeCategory.value === 'all') return challengeExamples
+  return challengeExamples.filter(c => c.category === activeCategory.value)
 })
 </script>
 
@@ -106,18 +91,18 @@ const filteredChallenges = computed(() => {
           <div>
             <div class="inline-flex items-center gap-2.5 px-4 py-1.5 rounded-full text-xs sm:text-sm font-black uppercase tracking-wider bg-institutional-500/10 text-institutional-600 dark:text-institutional-400 border border-institutional-500/20">
               <span class="w-2.5 h-2.5 rounded-full bg-institutional-500" />
-              Banco de Problemáticas Reales
+              Ejemplos de proyectos
             </div>
             <h2 class="text-3xl sm:text-4xl md:text-5xl font-black text-text-main tracking-tight mt-3">
-              Retos Activos de la Industria
+              Retos de la industria
             </h2>
             <p class="text-text-muted text-base sm:text-lg mt-2 max-w-xl">
-              Problemáticas tecnológicas reales planteadas por PYMEs y empresas de la región para ser desarrolladas en cursos de carrera.
+              Conoce los tipos de proyectos que puedes encontrar. Consulta el catálogo para ver los retos abiertos.
             </p>
           </div>
 
           <NuxtLink
-            to="/retos"
+            to="/challenges"
             class="inline-flex items-center gap-2 px-6 py-3 rounded-full bg-canvas border-2 border-neutral-900 dark:border-neutral-700 text-sm sm:text-base font-black text-text-main hover:bg-pastel-coral/30 transition-all shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] dark:shadow-[3px_3px_0px_0px_rgba(255,255,255,0.1)] active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-institutional-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-neutral-900"
           >
             <span>Ver Catálogo Completo</span>
@@ -167,19 +152,19 @@ const filteredChallenges = computed(() => {
           >
             <article
               v-for="item in filteredChallenges"
-              :key="item.id"
+              :key="item.category"
               class="group rounded-3xl border-2 border-neutral-900 dark:border-neutral-700 p-7 bg-canvas/40 hover:bg-canvas transition-all flex flex-col justify-between shadow-[5px_5px_0px_0px_rgba(0,0,0,1)] dark:shadow-[5px_5px_0px_0px_rgba(255,255,255,0.12)] hover:-translate-y-1 hover:shadow-[7px_7px_0px_0px_rgba(0,0,0,1)] dark:hover:shadow-[7px_7px_0px_0px_rgba(255,255,255,0.18)]"
             >
               <div>
-                <!-- Cabecera de la Tarjeta: Categoría y Verificación de Empresa -->
+                <!-- Categoría y carácter ilustrativo del reto -->
                 <div class="flex items-center justify-between gap-2">
                   <span
                     :class="[item.tagColor, 'inline-block px-3.5 py-1 rounded-full text-xs font-black border-2 border-neutral-900/40 dark:border-neutral-600']"
                   >
                     {{ item.categoryLabel }}
                   </span>
-                  <span class="text-xs font-bold text-emerald-700 dark:text-emerald-400 flex items-center gap-1">
-                    <span>✓</span> {{ item.company }}
+                  <span class="text-xs font-bold text-text-muted">
+                    Ejemplo de reto
                   </span>
                 </div>
 
@@ -205,28 +190,21 @@ const filteredChallenges = computed(() => {
                 </div>
               </div>
 
-              <!-- Metadatos de Semestre, Cupos y Duración -->
+              <!-- Semestre sugerido y enlace al catálogo -->
               <div class="pt-6 border-t-2 border-border-subtle mt-6 space-y-3">
                 <div class="flex items-center justify-between text-xs font-bold text-text-muted">
                   <span class="flex items-center gap-1.5">
-                    <span>🎓</span> {{ item.semester }}
-                  </span>
-                  <span class="flex items-center gap-1.5">
-                    <span>⏱</span> {{ item.duration }}
+                    <span aria-hidden="true">🎓</span> {{ item.semester }} sugeridos
                   </span>
                 </div>
 
-                <div class="flex items-center justify-between pt-2">
-                  <span class="text-xs font-black px-2.5 py-1 rounded-full bg-institutional-500/10 text-institutional-700 dark:text-institutional-300">
-                    {{ item.spots }}
-                  </span>
-
+                <div class="flex justify-end pt-2">
                   <NuxtLink
-                    to="/retos"
+                    to="/challenges"
                     class="text-xs sm:text-sm font-black text-text-main group-hover:text-institutional-600 dark:group-hover:text-institutional-400 flex items-center gap-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-institutional-500"
                   >
-                    <span>Postularse</span>
-                    <span class="group-hover:translate-x-1 transition-transform">→</span>
+                    <span>Explorar retos abiertos</span>
+                    <span aria-hidden="true" class="group-hover:translate-x-1 transition-transform">→</span>
                   </NuxtLink>
                 </div>
               </div>
