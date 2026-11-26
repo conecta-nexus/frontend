@@ -6,6 +6,7 @@ import {
   type StudentApplicationResponse,
   formatApplicationError,
   getApplicationErrorStatus,
+  normalizeMotivationLetter,
   useApplications,
 } from '~/composables/useApplications'
 import type { PublicChallengeDetail } from '~/types/challenge'
@@ -45,7 +46,7 @@ const submitFeedback = computed(() =>
     : 'Tu elegibilidad cambió. Cierra el formulario y revisa los requisitos antes de postularte.',
 )
 
-const trimmedLength = computed(() => motivationLetter.value.trim().length)
+const trimmedLength = computed(() => Array.from(normalizeMotivationLetter(motivationLetter.value)).length)
 const isLengthValid = computed(
   () =>
     trimmedLength.value >= MOTIVATION_MIN_LENGTH &&
@@ -60,12 +61,11 @@ const lengthStatusText = computed(() => {
 })
 
 const validationHint = computed(() => {
-  if (!attemptedSubmit.value) return null
-  if (trimmedLength.value < MOTIVATION_MIN_LENGTH) {
-    return `Escribe al menos ${MOTIVATION_MIN_LENGTH} caracteres explicando tu motivación y perfil técnico.`
-  }
   if (trimmedLength.value > MOTIVATION_MAX_LENGTH) {
     return `La carta de motivación no puede superar ${MOTIVATION_MAX_LENGTH} caracteres.`
+  }
+  if (attemptedSubmit.value && trimmedLength.value < MOTIVATION_MIN_LENGTH) {
+    return `Escribe al menos ${MOTIVATION_MIN_LENGTH} caracteres explicando tu motivación y perfil técnico.`
   }
   return null
 })
@@ -98,7 +98,7 @@ async function handleSubmit() {
   try {
     const application = await submitApplication({
       challenge_id: expectedChallengeId,
-      motivation_letter: motivationLetter.value.trim(),
+      motivation_letter: motivationLetter.value,
     })
 
     if (
@@ -215,7 +215,6 @@ onBeforeUnmount(() => {
             v-model="motivationLetter"
             data-testid="application-motivation-input"
             rows="6"
-            :maxlength="MOTIVATION_MAX_LENGTH"
             :disabled="submitting || terminal || !hasSubmitPermission"
             required
             placeholder="Describe tu experiencia relevante, conocimientos técnicos y cómo aportarías a resolver esta problemática empresarial..."

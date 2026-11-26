@@ -424,6 +424,79 @@ describe('Public challenge detail page redesign', () => {
     expect(wrapper.get('[data-testid="apply-challenge"]').text()).toContain('Postulación enviada')
   })
 
+  it.each([
+    ['ASCII 49', 'A', 49, false],
+    ['ASCII 50', 'A', 50, true],
+    ['ASCII 2000', 'A', 2000, true],
+    ['ASCII 2001', 'A', 2001, false],
+    ['supplementary 25', '🙂', 25, false],
+    ['supplementary 49', '🙂', 49, false],
+    ['supplementary 50', '🙂', 50, true],
+    ['supplementary 2000', '🙂', 2000, true],
+    ['supplementary 2001', '🙂', 2001, false],
+  ] as const)('validates and submits the letter by code point (%s, B-01)', async (_label, character, count, valid) => {
+    authenticateStudent()
+    apiFetch.mockRejectedValueOnce({ status: 502 })
+    const wrapper = createWrapper()
+    await flushPromises()
+    await wrapper.get('[data-testid="apply-challenge"]').trigger('click')
+
+    const letter = character.repeat(count)
+    const textarea = wrapper.get<HTMLTextAreaElement>('[data-testid="application-motivation-input"]')
+    await textarea.setValue(letter)
+    expect(textarea.element.value).toBe(letter)
+    expect(wrapper.get('[data-testid="application-char-counter"]').text()).toBe(
+      count < 50 ? `${count}/50 caracteres mínimos` : `${count}/2000 caracteres`,
+    )
+    expect(wrapper.get<HTMLButtonElement>('[data-testid="submit-application-btn"]').element.disabled).toBe(!valid)
+    if (count > 2000) expect(wrapper.text()).toContain('La carta de motivación no puede superar 2000 caracteres.')
+
+    // A direct submit event must also be rejected for an invalid letter.
+    await wrapper.get('#challenge-application-form').trigger('submit')
+    await flushPromises()
+    if (valid) {
+      expect(apiFetch).toHaveBeenCalledExactlyOnceWith('/applications/', {
+        method: 'POST',
+        body: { challenge_id: 'challenge-1', motivation_letter: letter },
+      })
+    } else {
+      expect(apiFetch).not.toHaveBeenCalled()
+    }
+  })
+
+  it.each([
+    ['mixed text with combining marks', 'Aé🙂e\u0301'.repeat(10), '\u0085\u001C\u00A0', '\u2003\u001F', 50],
+    ['a non-whitespace BOM and mixed text', '\uFEFF' + 'Aé🙂e\u0301'.repeat(9) + ' é🙂A', ' \t', '\u00A0 ', 50],
+    ['a supplementary letter at the limit', '🙂'.repeat(2000), ' \t', '\u2003 ', 2000],
+  ] as const)('preserves editing and sends the Python-trimmed payload for %s (B-01)', async (_label, normalized, start, end, count) => {
+    authenticateStudent()
+    apiFetch.mockRejectedValueOnce({ status: 502 })
+    const wrapper = createWrapper()
+    await flushPromises()
+    await wrapper.get('[data-testid="apply-challenge"]').trigger('click')
+
+    const textarea = wrapper.get<HTMLTextAreaElement>('[data-testid="application-motivation-input"]')
+    const raw = start + normalized + end
+    await textarea.setValue(raw)
+    expect(textarea.element.value).toBe(raw)
+    expect(wrapper.get('[data-testid="application-char-counter"]').text()).toBe(`${count}/2000 caracteres`)
+    expect(wrapper.get<HTMLButtonElement>('[data-testid="submit-application-btn"]').element.disabled).toBe(false)
+    await wrapper.get('#challenge-application-form').trigger('submit')
+    await flushPromises()
+    expect(apiFetch).toHaveBeenCalledExactlyOnceWith('/applications/', {
+      method: 'POST',
+      body: { challenge_id: 'challenge-1', motivation_letter: normalized },
+    })
+  })
+
+  it('does not impose a native UTF-16 editing limit (B-01)', async () => {
+    authenticateStudent()
+    const wrapper = createWrapper()
+    await flushPromises()
+    await wrapper.get('[data-testid="apply-challenge"]').trigger('click')
+    expect(wrapper.get('[data-testid="application-motivation-input"]').attributes('maxlength')).toBeUndefined()
+  })
+
   it('displays server 409 duplicate application error inside the modal cleanly', async () => {
     authenticateStudent()
 

@@ -19,6 +19,22 @@ export interface StudentApplicationResponse {
 export const MOTIVATION_MIN_LENGTH = 50
 export const MOTIVATION_MAX_LENGTH = 2000
 
+const unicodeWhitespace = /\p{White_Space}/u
+
+function isPythonWhitespace(character: string): boolean {
+  const code = character.charCodeAt(0)
+  return unicodeWhitespace.test(character) || (code >= 0x1C && code <= 0x1F)
+}
+
+// Match the serializer's Python str.strip(), including its four extra separators.
+export function normalizeMotivationLetter(value: string): string {
+  let start = 0
+  let end = value.length
+  while (start < end && isPythonWhitespace(value.charAt(start))) start++
+  while (end > start && isPythonWhitespace(value.charAt(end - 1))) end--
+  return value.slice(start, end)
+}
+
 export function getApplicationErrorStatus(err: unknown): number | undefined {
   if (!err || typeof err !== 'object') return undefined
   const apiError = err as {
@@ -84,7 +100,7 @@ export function useApplications() {
         method: 'POST',
         body: {
           challenge_id: payload.challenge_id,
-          motivation_letter: payload.motivation_letter.trim(),
+          motivation_letter: normalizeMotivationLetter(payload.motivation_letter),
         },
       })
     } catch (err: unknown) {
