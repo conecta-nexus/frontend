@@ -12,10 +12,21 @@ import {
   formatUnreadBadge,
   getNotificationEventMeta,
   mergeNotificationItems,
+  parseTimestampMs,
   sanitizeNotificationLink,
   selectNewlyArrivedNotifications,
   trackKnownNotifications,
 } from '~/utils/notifications'
+
+const MAX_ARRIVAL_RECOVERY_REQUESTS = 2
+
+interface ArrivalRecovery {
+  boundaryIds: Set<string>
+  candidateIds: Set<string>
+  headIds: string[]
+  anchorId: string
+  offset: number
+}
 
 interface NotificationRuntimeState {
   activeSessionKey: string | null
@@ -27,10 +38,13 @@ interface NotificationRuntimeState {
   latestLoadMoreSeq: number
   latestPollOpSeq: number
   latestLoadMoreOpSeq: number
-  initialFetchInFlight: boolean
+  initialPageRequest: Promise<NotificationListResponse | null> | null
   hasBaselineLoaded: boolean
+  firstPageIds: string[] | null
+  nextOffset: number
   lastSyncedAt: number
   watermarkCreatedAtMs: number | null
+  arrivalRecovery: ArrivalRecovery | null
   seenIds: Map<string, number>
   notificationToastIds: Set<string | number>
   clickingIds: Set<string>
@@ -58,10 +72,13 @@ function getNotificationRuntime(nuxtApp: object): NotificationRuntimeState {
       latestLoadMoreSeq: 0,
       latestPollOpSeq: 0,
       latestLoadMoreOpSeq: 0,
-      initialFetchInFlight: false,
+      initialPageRequest: null,
       hasBaselineLoaded: false,
+      firstPageIds: null,
+      nextOffset: 0,
       lastSyncedAt: 0,
       watermarkCreatedAtMs: null,
+      arrivalRecovery: null,
       seenIds: new Map<string, number>(),
       notificationToastIds: new Set<string | number>(),
       clickingIds: new Set<string>(),
@@ -74,6 +91,10 @@ function getNotificationRuntime(nuxtApp: object): NotificationRuntimeState {
     runtimeByContext.set(nuxtApp, runtime)
   }
   return runtime
+}
+
+function matchesPageIds(ids: string[] | null, page: NotificationItem[]): boolean {
+  return ids?.length === page.length && page.every((item, index) => item.id === ids[index])
 }
 
 function extractHttpStatus(err: unknown): number | undefined {
@@ -141,10 +162,13 @@ export function useNotifications() {
     runtime.latestPollOpSeq += 1
     runtime.latestLoadMoreOpSeq += 1
     runtime.activeSessionKey = nextSessionKey
-    runtime.initialFetchInFlight = false
+    runtime.initialPageRequest = null
     runtime.hasBaselineLoaded = false
+    runtime.firstPageIds = null
+    runtime.nextOffset = 0
     runtime.lastSyncedAt = 0
     runtime.watermarkCreatedAtMs = null
+    runtime.arrivalRecovery = null
     runtime.pollInFlight = false
     runtime.seenIds.clear()
     runtime.clickingIds.clear()
@@ -252,11 +276,99 @@ export function useNotifications() {
     })
   }
 
+  async function detectPageArrivals(
+    firstPage: NotificationItem[],
+    previousHead: string[] | null,
+    epoch: number,
+    sessionKey: string,
+    isCurrent: () => boolean,
+  ) {
+    const pending = runtime.arrivalRecovery
+    const boundaryIds = pending?.boundaryIds ?? new Set(previousHead)
+    const watermark = runtime.watermarkCreatedAtMs
+    const splitAtBoundary = (page: NotificationItem[]) => {
+      const index = page.findIndex((item) => {
+        const timestamp = parseTimestampMs(item.created_at)
+        // Keep scanning the watermark millisecond for unseen IDs ordered after a known item.
+        if (timestamp !== null && timestamp === watermark) return false
+        return boundaryIds.has(item.id) || (watermark !== null && timestamp !== null && timestamp < watermark)
+      })
+      return { candidates: index < 0 ? page : page.slice(0, index), reachedBoundary: index >= 0 }
+    }
+
+    const head = splitAtBoundary(firstPage)
+    const headIsComplete = head.reachedBoundary || firstPage.length < DEFAULT_NOTIFICATION_LIMIT
+    if (!pending && headIsComplete) {
+      notifyArrivedItems(head.candidates, epoch, sessionKey)
+      return
+    }
+
+    const recovery: ArrivalRecovery = pending ?? {
+      boundaryIds,
+      candidateIds: new Set<string>(),
+      headIds: [],
+      anchorId: '',
+      offset: 0,
+    }
+    runtime.arrivalRecovery = recovery
+    for (const item of head.candidates) recovery.candidateIds.add(item.id)
+
+    const continueFromHead = () => {
+      recovery.headIds = firstPage.map(item => item.id)
+      recovery.offset = firstPage.length - 1
+      recovery.anchorId = firstPage[recovery.offset]!.id
+    }
+
+    let complete = headIsComplete
+    if (!complete && !matchesPageIds(recovery.headIds, firstPage)) continueFromHead()
+    for (let request = 0; !complete && request < MAX_ARRIVAL_RECOVERY_REQUESTS; request += 1) {
+      let response: NotificationListResponse
+      try {
+        response = await apiFetch<NotificationListResponse>('/notifications/me', {
+          method: 'GET',
+          query: { limit: DEFAULT_NOTIFICATION_LIMIT, offset: recovery.offset },
+        })
+      } catch {
+        return // Retry the same position after the next accepted first page.
+      }
+
+      if (!isCurrent() || runtime.arrivalRecovery !== recovery) return
+      const page = Array.isArray(response.items) ? response.items : []
+      if (page[0]?.id !== recovery.anchorId) {
+        // The offset moved between requests. Start from a fresh head on the next refresh.
+        continueFromHead()
+        return
+      }
+
+      const { candidates, reachedBoundary } = splitAtBoundary(page.slice(1))
+      items.value = mergeNotificationItems(items.value, candidates)
+      unreadCount.value = Math.max(0, Number(response.unread_count) || 0)
+      for (const item of candidates) recovery.candidateIds.add(item.id)
+
+      complete = reachedBoundary || page.length < DEFAULT_NOTIFICATION_LIMIT
+      recovery.offset += page.length - 1
+      recovery.anchorId = page[page.length - 1]!.id
+    }
+
+    if (!complete) return
+    runtime.arrivalRecovery = null
+    notifyArrivedItems(items.value.filter(item => recovery.candidateIds.has(item.id)), epoch, sessionKey)
+  }
+
+  function updatePaginationWindow(firstPage: NotificationItem[]) {
+    if (matchesPageIds(runtime.firstPageIds, firstPage)) return
+
+    // Keep visible history, but resume scanning from the latest contiguous prefix.
+    // Merged items may contain gaps when new arrivals shift the server's offsets.
+    runtime.firstPageIds = firstPage.map(item => item.id)
+    runtime.nextOffset = firstPage.length
+    runtime.latestLoadMoreSeq += 1
+    hasMore.value = firstPage.length >= DEFAULT_NOTIFICATION_LIMIT
+  }
+
   async function fetchNotificationsPage(
     options: {
-      limit?: number
       offset?: number
-      isInitial?: boolean
       fromPoll?: boolean
       showLoader?: boolean
     } = {},
@@ -267,7 +379,7 @@ export function useNotifications() {
       return null
     }
 
-    const limit = options.limit ?? DEFAULT_NOTIFICATION_LIMIT
+    const limit = DEFAULT_NOTIFICATION_LIMIT
     const offset = options.offset ?? 0
     const isPageZero = offset === 0
     const capturedEpoch = runtime.sessionEpoch
@@ -275,11 +387,6 @@ export function useNotifications() {
     const capturedMarkAll = runtime.markAllVersion
     const capturedPageZeroSeq = isPageZero ? ++runtime.latestPageZeroSeq : runtime.latestPageZeroSeq
     const capturedLoadMoreSeq = isPageZero ? runtime.latestLoadMoreSeq : ++runtime.latestLoadMoreSeq
-
-    const isInitialBaselineFetch = isPageZero && !runtime.hasBaselineLoaded
-    if (isInitialBaselineFetch) {
-      runtime.initialFetchInFlight = true
-    }
 
     if (options.showLoader) {
       loading.value = true
@@ -318,7 +425,9 @@ export function useNotifications() {
       const incomingItems = Array.isArray(response.items) ? response.items : []
 
       if (isPageZero) {
-        if (!runtime.hasBaselineLoaded) {
+        const previousHead = runtime.firstPageIds
+        const hadBaseline = runtime.hasBaselineLoaded
+        if (!hadBaseline) {
           runtime.watermarkCreatedAtMs = trackKnownNotifications(
             incomingItems,
             runtime.seenIds,
@@ -328,22 +437,34 @@ export function useNotifications() {
           runtime.hasBaselineLoaded = true
           items.value = mergeNotificationItems([], incomingItems)
         } else {
-          // Any valid page-0 fetch after initial baseline (poll, drawer open, manual reload)
-          // detects genuinely unseen arrivals once without losing alerts or duplicating on next poll.
-          notifyArrivedItems(incomingItems, capturedEpoch, sessionKey)
           items.value = mergeNotificationItems(items.value, incomingItems)
         }
 
-        if (options.isInitial || items.value.length <= limit) {
-          hasMore.value = incomingItems.length >= limit
-        }
+        updatePaginationWindow(incomingItems)
 
         unreadCount.value = Math.max(0, Number(response.unread_count) || 0)
         runtime.lastSyncedAt = Date.now()
+        error.value = null
+        if (!options.fromPoll) actionError.value = null
+        if (hadBaseline) {
+          await detectPageArrivals(incomingItems, previousHead, capturedEpoch, sessionKey, () =>
+            capturedEpoch === runtime.sessionEpoch &&
+            currentSessionKey.value === sessionKey &&
+            capturedPageZeroSeq === runtime.latestPageZeroSeq &&
+            capturedMutation === runtime.mutationVersion &&
+            capturedMarkAll === runtime.markAllVersion &&
+            !runtime.reconcilingReadAll,
+          )
+        }
       } else {
-        // Pagination (offset > 0) records historical IDs without emitting toasts or moving watermark
+        // Manual pagination must not mark arrivals in the pending interval as already seen.
+        const watermark = runtime.watermarkCreatedAtMs
         trackKnownNotifications(
-          incomingItems,
+          incomingItems.filter((item) => {
+            const timestamp = parseTimestampMs(item.created_at)
+            return watermark !== null && timestamp !== null &&
+              (runtime.arrivalRecovery ? timestamp < watermark : timestamp <= watermark)
+          }),
           runtime.seenIds,
           runtime.watermarkCreatedAtMs,
           { advanceWatermark: false },
@@ -353,26 +474,26 @@ export function useNotifications() {
         items.value = mergeNotificationItems(items.value, incomingItems, {
           preserveReadFlagsFromExisting: mutationHappenedDuringPagination,
         })
+        runtime.nextOffset = offset + incomingItems.length
         hasMore.value = incomingItems.length >= limit
 
         // Never overwrite unreadCount with pre-mutation pagination snapshot
         if (!mutationHappenedDuringPagination) {
           unreadCount.value = Math.max(0, Number(response.unread_count) || 0)
         }
-      }
-
-      error.value = null
-      if (isPageZero && !options.fromPoll) {
-        actionError.value = null
+        error.value = null
       }
       return response
     } catch {
       if (
         capturedEpoch === runtime.sessionEpoch &&
         currentSessionKey.value === sessionKey &&
-        !options.fromPoll &&
+        (!options.fromPoll || (isPageZero && loading.value)) &&
         !runtime.reconcilingReadAll &&
-        (!isPageZero || (capturedPageZeroSeq === runtime.latestPageZeroSeq && capturedMutation === runtime.mutationVersion))
+        capturedMarkAll === runtime.markAllVersion &&
+        (isPageZero
+          ? capturedPageZeroSeq === runtime.latestPageZeroSeq && capturedMutation === runtime.mutationVersion
+          : capturedLoadMoreSeq === runtime.latestLoadMoreSeq)
       ) {
         error.value = 'No pudimos cargar tus notificaciones. Intenta nuevamente.'
       }
@@ -381,24 +502,36 @@ export function useNotifications() {
       if (
         capturedEpoch === runtime.sessionEpoch &&
         currentSessionKey.value === sessionKey &&
-        (!isPageZero || capturedPageZeroSeq === runtime.latestPageZeroSeq)
+        isPageZero &&
+        capturedPageZeroSeq === runtime.latestPageZeroSeq
       ) {
-        if (isInitialBaselineFetch) {
-          runtime.initialFetchInFlight = false
-        }
-        if (options.showLoader) {
-          loading.value = false
-        }
+        // The newest page-zero request owns the visible loader even when it starts in the background.
+        loading.value = false
       }
+    }
+  }
+
+  async function fetchFirstPage(options: { fromPoll: boolean, showLoader: boolean }) {
+    if (!ensureSessionAlignment()) return null
+    if (runtime.hasBaselineLoaded) return await fetchNotificationsPage(options)
+
+    if (runtime.initialPageRequest) {
+      if (options.showLoader) loading.value = true
+      return await runtime.initialPageRequest
+    }
+
+    const request = fetchNotificationsPage(options)
+    runtime.initialPageRequest = request
+    try {
+      return await request
+    } finally {
+      if (runtime.initialPageRequest === request) runtime.initialPageRequest = null
     }
   }
 
   async function fetchInitial(options: { showLoader?: boolean } = {}) {
     const showLoader = options.showLoader ?? items.value.length === 0
-    return await fetchNotificationsPage({
-      limit: DEFAULT_NOTIFICATION_LIMIT,
-      offset: 0,
-      isInitial: true,
+    return await fetchFirstPage({
       fromPoll: false,
       showLoader,
     })
@@ -419,10 +552,7 @@ export function useNotifications() {
     const pollOpId = ++runtime.latestPollOpSeq
     runtime.pollInFlight = true
     try {
-      await fetchNotificationsPage({
-        limit: DEFAULT_NOTIFICATION_LIMIT,
-        offset: 0,
-        isInitial: !runtime.hasBaselineLoaded,
+      await fetchFirstPage({
         fromPoll: runtime.hasBaselineLoaded,
         showLoader: false,
       })
@@ -438,7 +568,7 @@ export function useNotifications() {
 
   async function loadMore() {
     const sessionKey = ensureSessionAlignment()
-    if (!sessionKey || loading.value || loadingMore.value || !hasMore.value) {
+    if (!sessionKey || loading.value || loadingMore.value || runtime.reconcilingReadAll || !hasMore.value) {
       return null
     }
 
@@ -448,9 +578,7 @@ export function useNotifications() {
     actionError.value = null
     try {
       return await fetchNotificationsPage({
-        limit: DEFAULT_NOTIFICATION_LIMIT,
-        offset: items.value.length,
-        isInitial: false,
+        offset: runtime.nextOffset,
         fromPoll: false,
         showLoader: false,
       })
@@ -554,7 +682,6 @@ export function useNotifications() {
         unreadCount.value = authoritativeUnread
         runtime.mutationVersion += 1
         runtime.markAllVersion += 1
-        runtime.latestPageZeroSeq += 1
 
         // Authoritative reconciliation against backend so concurrent arrivals remain unread,
         // newly arrived notifications emit one toast, and concurrent polling/reloads cannot invalidate it.
@@ -569,7 +696,9 @@ export function useNotifications() {
           }
 
           const serverItems = Array.isArray(reconResult.items) ? reconResult.items : []
-          if (!runtime.hasBaselineLoaded) {
+          const previousHead = runtime.firstPageIds
+          const hadBaseline = runtime.hasBaselineLoaded
+          if (!hadBaseline) {
             runtime.watermarkCreatedAtMs = trackKnownNotifications(
               serverItems,
               runtime.seenIds,
@@ -577,8 +706,6 @@ export function useNotifications() {
               { advanceWatermark: true },
             )
             runtime.hasBaselineLoaded = true
-          } else {
-            notifyArrivedItems(serverItems, capturedEpoch, sessionKey)
           }
 
           const reconUnreadCount = Math.max(0, Number(reconResult.unread_count) || 0)
@@ -596,14 +723,18 @@ export function useNotifications() {
                 : item,
             )
 
-          // Bump sequence and versions when committing authoritative reconciliation so any
-          // pre-reconciliation poll/reload/pagination in flight is discarded and never overwrites us.
-          runtime.latestPageZeroSeq += 1
+          // Invalidate pre-reconciliation snapshots without transferring ownership of the visible loader.
           runtime.latestLoadMoreSeq += 1
           runtime.mutationVersion += 1
           items.value = mergeNotificationItems(olderPreservedItems, serverItems)
+          updatePaginationWindow(serverItems)
           unreadCount.value = reconUnreadCount
           runtime.lastSyncedAt = Date.now()
+          if (hadBaseline) {
+            await detectPageArrivals(serverItems, previousHead, capturedEpoch, sessionKey, () =>
+              capturedEpoch === runtime.sessionEpoch && currentSessionKey.value === sessionKey,
+            )
+          }
           return true
         } catch {
           if (capturedEpoch !== runtime.sessionEpoch || currentSessionKey.value !== sessionKey) {
@@ -734,7 +865,7 @@ export function useNotifications() {
       document.addEventListener('visibilitychange', runtime.visibilityHandler)
     }
 
-    if (!runtime.hasBaselineLoaded && !runtime.pollInFlight && !runtime.initialFetchInFlight) {
+    if (!runtime.hasBaselineLoaded && !runtime.initialPageRequest) {
       void fetchInitial({ showLoader: true })
     }
     schedulePollInterval()

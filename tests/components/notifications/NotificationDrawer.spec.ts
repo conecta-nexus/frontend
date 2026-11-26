@@ -90,6 +90,25 @@ function makeNotification(overrides: Partial<NotificationItem> = {}): Notificati
   }
 }
 
+function deferredPage() {
+  let resolve!: (value: { items: NotificationItem[], unread_count: number }) => void
+  let reject!: (reason: Error) => void
+  const promise = new Promise<Parameters<typeof resolve>[0]>((accept, fail) => {
+    resolve = accept
+    reject = fail
+  })
+  return { promise, resolve, reject }
+}
+
+function makeHistory(length: number) {
+  return Array.from({ length }, (_, index) =>
+    makeNotification({
+      id: `burst-${index}`,
+      created_at: new Date(Date.UTC(2026, 10, 25, 18, 59 - index)).toISOString(),
+    }),
+  )
+}
+
 describe('Notification helpers and route sanitization', () => {
   it('formats unread badge bounds cleanly for 0, 1..99, and >99', () => {
     expect(formatUnreadBadge(0)).toBe('')
@@ -827,6 +846,300 @@ describe('useNotifications, NotificationBell, and NotificationDrawer', () => {
     await pollBPromise
     expect(notifications.unreadCount.value).toBe(1)
   })
+
+  it.each(['foreground first', 'poll first', 'poll fails'] as const)(
+    'settles a visible load superseded by polling (%s, A-01)',
+    async (order) => {
+      const visible = deferredPage()
+      const polling = deferredPage()
+      const baseline = makeNotification({ id: 'baseline' })
+      const newest = makeNotification({ id: 'newest', created_at: '2026-11-25T19:00:00Z' })
+      apiFetch.mockResolvedValueOnce({ items: [baseline], unread_count: 1 })
+        .mockReturnValueOnce(visible.promise)
+        .mockReturnValueOnce(polling.promise)
+      const notifications = useNotifications()
+      await notifications.fetchInitial()
+
+      const reload = notifications.fetchInitial({ showLoader: true })
+      const poll = notifications.pollNotifications()
+      const stale = { items: [baseline], unread_count: 99 }
+      const fresh = { items: [newest, baseline], unread_count: 2 }
+      if (order === 'foreground first') {
+        visible.resolve(stale)
+        await reload
+        expect(notifications.loading.value).toBe(true)
+        polling.resolve(fresh)
+      } else {
+        if (order === 'poll fails') polling.reject(new Error('Unavailable'))
+        else polling.resolve(fresh)
+        await poll
+        expect(notifications.loading.value).toBe(false)
+        visible.resolve(stale)
+      }
+      await Promise.all([reload, poll])
+      expect(notifications.loading.value).toBe(false)
+      expect(notifications.unreadCount.value).toBe(order === 'poll fails' ? 1 : 2)
+      expect(Boolean(notifications.error.value)).toBe(order === 'poll fails')
+    },
+  )
+
+  it('keeps the next session loading when a request from before logout settles (A-01, A-03)', async () => {
+    const oldPage = deferredPage()
+    const newPage = deferredPage()
+    apiFetch.mockReturnValueOnce(oldPage.promise).mockReturnValueOnce(newPage.promise)
+    const notifications = useNotifications()
+    const oldLoad = notifications.fetchInitial()
+    mockAccessToken.value = null
+    mockUser.value = null
+    notifications.resetState()
+    expect(notifications.loading.value).toBe(false)
+
+    mockAccessToken.value = 'jwt-user-b'
+    mockUser.value = { id: 'user-b-uuid', email: 'b@example.test', role: 'COMPANY' }
+    const newLoad = notifications.fetchInitial()
+    oldPage.reject(new Error('Old session failed'))
+    await oldLoad
+    expect(apiFetch).toHaveBeenCalledTimes(2)
+    expect(notifications.loading.value).toBe(true)
+    expect(notifications.error.value).toBeNull()
+    newPage.resolve({ items: [], unread_count: 0 })
+    await newLoad
+    expect(notifications.loading.value).toBe(false)
+  })
+
+  it('shares the initial GET across polling and drawer consumers and allows retry after failure (A-03)', async () => {
+    const pending = deferredPage()
+    apiFetch.mockReturnValueOnce(pending.promise)
+      .mockResolvedValueOnce({ items: [makeNotification()], unread_count: 1 })
+    const notifications = useNotifications()
+    notifications.startPolling()
+    const drawer = useNotifications()
+    drawer.openDrawer()
+    const shared = drawer.fetchInitial()
+    const poll = drawer.pollNotifications()
+    expect(apiFetch).toHaveBeenCalledTimes(1)
+    expect(drawer.loading.value).toBe(true)
+    pending.reject(new Error('Unavailable'))
+    await Promise.all([shared, poll])
+    expect(drawer.loading.value).toBe(false)
+    expect(drawer.error.value).toBeTruthy()
+    await drawer.fetchInitial()
+    expect(apiFetch).toHaveBeenCalledTimes(2)
+    expect(drawer.error.value).toBeNull()
+    expect(drawer.unreadCount.value).toBe(1)
+    expect(toastAddMock).not.toHaveBeenCalled()
+  })
+
+  it('recovers every row after a burst and retries the same offset after a page failure (A-02)', async () => {
+    const history = makeHistory(50)
+    let server = history.slice(30)
+    apiFetch.mockImplementation((_path, options) => {
+      const { offset, limit } = options.query
+      return Promise.resolve({ items: server.slice(offset, offset + limit), unread_count: server.length })
+    })
+    const notifications = useNotifications()
+    await notifications.fetchInitial()
+    server = history
+    await notifications.pollNotifications()
+
+    expect(toastAddMock).toHaveBeenCalledOnce()
+    expect(toastAddMock).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Tienes 30 notificaciones nuevas',
+      duration: NOTIFICATION_TOAST_DURATION_MS,
+    }))
+    expect(apiFetch.mock.calls.map(([, options]) => options.query.offset)).toEqual([0, 0, 19])
+    expect(notifications.items.value.map(({ id }) => id)).toEqual(history.map(({ id }) => id))
+
+    const paginationStart = apiFetch.mock.calls.length
+    apiFetch.mockRejectedValueOnce(new Error('Unavailable'))
+    await notifications.loadMore()
+    expect(notifications.error.value).toBeTruthy()
+    await notifications.loadMore()
+    expect(apiFetch.mock.calls.slice(paginationStart, paginationStart + 2).map(([, options]) => options.query.offset)).toEqual([20, 20])
+    await notifications.loadMore()
+    expect(notifications.items.value.map(({ id }) => id)).toEqual(history.map(({ id }) => id))
+    expect(notifications.unreadCount.value).toBe(50)
+    expect(notifications.hasMore.value).toBe(false)
+    expect(notifications.error.value).toBeNull()
+    await notifications.pollNotifications()
+    expect(toastAddMock).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['identical timestamps', '2026-11-25T18:30:00.123Z', '2026-11-25T18:30:00.123Z'],
+    ['different sub-millisecond timestamps', '2026-11-25T18:30:00.123900Z', '2026-11-25T18:30:00.123100Z'],
+  ])('alerts once for an unseen item after a known item with %s', async (_scenario, knownDate, newDate) => {
+    expect(Date.parse(newDate)).toBe(Date.parse(knownDate))
+    const known = makeNotification({ id: '22222222-2222-4222-8222-222222222222', title: 'Ya conocida', created_at: knownDate })
+    const arrival = makeNotification({ id: '11111111-1111-4111-8111-111111111111', title: 'Nueva con la misma marca', created_at: newDate })
+    apiFetch.mockResolvedValueOnce({ items: [known], unread_count: 1 })
+      .mockResolvedValue({ items: [known, arrival], unread_count: 2 })
+
+    const notifications = useNotifications()
+    await notifications.fetchInitial()
+    expect(toastAddMock).not.toHaveBeenCalled()
+
+    await notifications.pollNotifications()
+    expect(toastAddMock).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      title: arrival.title,
+      duration: NOTIFICATION_TOAST_DURATION_MS,
+    }))
+
+    await notifications.pollNotifications()
+    expect(toastAddMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('resumes automatic burst recovery after a failed request without alerting the historical tail', async () => {
+    const history = makeHistory(70)
+    let server = history.slice(30)
+    let failRecovery = true
+    apiFetch.mockImplementation((_path, { query: { offset, limit } }) => {
+      if (offset === 19 && failRecovery) {
+        failRecovery = false
+        return Promise.reject(new Error('Unavailable'))
+      }
+      return Promise.resolve({ items: server.slice(offset, offset + limit), unread_count: server.length })
+    })
+    const notifications = useNotifications()
+    await notifications.fetchInitial()
+    expect(toastAddMock).not.toHaveBeenCalled()
+    server = history
+
+    await notifications.pollNotifications()
+    expect(notifications.items.value).toHaveLength(40)
+    expect(notifications.unreadCount.value).toBe(70)
+    expect(toastAddMock).not.toHaveBeenCalled()
+
+    await notifications.pollNotifications()
+    expect(apiFetch.mock.calls.map(([, options]) => options.query.offset)).toEqual([0, 0, 19, 0, 19])
+    expect(notifications.items.value).toEqual(history.slice(0, 50))
+    await notifications.loadMore()
+    await notifications.loadMore()
+    await notifications.loadMore()
+    expect(notifications.items.value).toEqual(history)
+    expect(toastAddMock).toHaveBeenCalledOnce()
+    expect(toastAddMock).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Tienes 30 notificaciones nuevas',
+    }))
+  })
+
+  it('caps recovery requests per poll and resumes from the last confirmed position', async () => {
+    const history = makeHistory(85)
+    let server = history.slice(65)
+    apiFetch.mockImplementation((_path, { query: { offset, limit } }) =>
+      Promise.resolve({ items: server.slice(offset, offset + limit), unread_count: server.length }),
+    )
+    const notifications = useNotifications()
+    await notifications.fetchInitial()
+    server = history
+
+    await notifications.pollNotifications()
+    expect(apiFetch.mock.calls.map(([, options]) => options.query.offset)).toEqual([0, 0, 19, 38])
+    expect(toastAddMock).not.toHaveBeenCalled()
+
+    await notifications.pollNotifications()
+    expect(apiFetch.mock.calls.map(([, options]) => options.query.offset)).toEqual([0, 0, 19, 38, 0, 57])
+    expect(notifications.items.value).toEqual(history)
+    expect(toastAddMock).toHaveBeenCalledOnce()
+    expect(toastAddMock).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Tienes 65 notificaciones nuevas',
+    }))
+  })
+
+  it('rejects a shifted offset and reconciles against a fresh first page', async () => {
+    const history = makeHistory(51)
+    let server = history.slice(31)
+    let insertDuringRecovery = true
+    apiFetch.mockImplementation((_path, { query: { offset, limit } }) => {
+      if (offset > 0 && insertDuringRecovery) {
+        insertDuringRecovery = false
+        server = history
+      }
+      return Promise.resolve({ items: server.slice(offset, offset + limit), unread_count: server.length })
+    })
+    const notifications = useNotifications()
+    await notifications.fetchInitial()
+    server = history.slice(1)
+    await notifications.pollNotifications()
+    expect(toastAddMock).not.toHaveBeenCalled()
+    expect(apiFetch.mock.calls.map(([, options]) => options.query.offset)).toEqual([0, 0, 19])
+
+    await notifications.pollNotifications()
+    expect(apiFetch.mock.calls.map(([, options]) => options.query.offset)).toEqual([0, 0, 19, 0, 19])
+    expect(notifications.items.value).toEqual(history)
+    expect(toastAddMock).toHaveBeenCalledOnce()
+    expect(toastAddMock).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Tienes 31 notificaciones nuevas',
+    }))
+  })
+
+  it('invalidates a pending burst recovery when the authenticated identity changes', async () => {
+    const history = makeHistory(50)
+    const pending = deferredPage()
+    const nextUserItem = makeNotification({ id: 'belongs-to-b' })
+    apiFetch.mockResolvedValueOnce({ items: history.slice(30), unread_count: 20 })
+      .mockResolvedValueOnce({ items: history.slice(0, 20), unread_count: 50 })
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValueOnce({ items: [nextUserItem], unread_count: 1 })
+    const notifications = useNotifications()
+    await notifications.fetchInitial()
+    const previousPoll = notifications.pollNotifications()
+    await flushPromises()
+    expect(apiFetch).toHaveBeenCalledTimes(3)
+
+    mockAccessToken.value = 'jwt-user-b'
+    mockUser.value = { id: 'user-b-uuid', email: 'b@example.test', role: 'COMPANY' }
+    await notifications.fetchInitial()
+    pending.resolve({ items: history.slice(19, 39), unread_count: 50 })
+    await previousPoll
+
+    expect(apiFetch).toHaveBeenCalledTimes(4)
+    expect(notifications.items.value).toEqual([nextUserItem])
+    expect(notifications.unreadCount.value).toBe(1)
+    expect(toastAddMock).not.toHaveBeenCalled()
+  })
+
+  it.each(['poll', 'read-all'] as const)(
+    'restarts pagination after %s shifts the first page while a historical page is in flight (A-02)',
+    async (operation) => {
+      const history = Array.from({ length: 22 }, (_, index) =>
+        makeNotification({
+          id: `notice-${index}`,
+          created_at: new Date(Date.UTC(2026, 10, 25, 18, 59 - index)).toISOString(),
+          is_read: operation === 'read-all',
+        }),
+      )
+      const baseline = history.slice(1, 21).map(item => ({ ...item, is_read: false }))
+      const stalePage = deferredPage()
+      const unreadCount = operation === 'read-all' ? 0 : 22
+      apiFetch.mockResolvedValueOnce({ items: baseline, unread_count: 21 })
+        .mockReturnValueOnce(stalePage.promise)
+      if (operation === 'read-all') {
+        apiFetch.mockResolvedValueOnce({ updated_count: 22, unread_count: 0 })
+      }
+      apiFetch.mockResolvedValueOnce({ items: history.slice(0, 20), unread_count: unreadCount })
+        .mockResolvedValueOnce({ items: history.slice(20), unread_count: unreadCount })
+
+      const notifications = useNotifications()
+      await notifications.fetchInitial()
+      const pending = notifications.loadMore()
+      if (operation === 'read-all') await notifications.markAllAsRead()
+      else await notifications.pollNotifications()
+
+      stalePage.resolve({ items: [{ ...history[21]!, is_read: false }], unread_count: 21 })
+      await pending
+      expect(notifications.unreadCount.value).toBe(unreadCount)
+      expect(notifications.items.value.some(item => item.id === 'notice-21')).toBe(false)
+      expect(notifications.loadingMore.value).toBe(false)
+
+      await notifications.loadMore()
+      expect(apiFetch).toHaveBeenLastCalledWith('/notifications/me', {
+        method: 'GET', query: { limit: 20, offset: 20 },
+      })
+      expect(notifications.items.value.map(({ id }) => id)).toEqual(history.map(({ id }) => id))
+      expect(notifications.hasMore.value).toBe(false)
+    },
+  )
 
   it('keeps Mark All reconciliation authoritative with positive unread_count, >20 paginated history, concurrent polling/reload, and error recovery (H-04)', async () => {
     const page0 = Array.from({ length: 20 }, (_, i) =>
