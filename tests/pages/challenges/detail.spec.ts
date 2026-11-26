@@ -3,12 +3,36 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { reactive, ref } from 'vue'
 import ChallengeDetailPage from '~/pages/challenges/[id].vue'
 import type { PublicChallengeDetail } from '~/types/challenge'
+import { formatApplicationError } from '~/composables/useApplications'
+import SafeRichTextContent from '~/components/challenges/SafeRichTextContent.vue'
 
 const getCatalogChallenge = vi.fn()
+const apiFetch = vi.fn()
+const fetchProfile = vi.fn()
+const fetchConsent = vi.fn()
+const initSession = vi.fn()
 const routerPush = vi.fn()
 const addToast = vi.fn()
+
 const isAuthenticated = ref(false)
 const userRole = ref<'STUDENT' | 'COMPANY' | 'ADMIN' | null>(null)
+const user = ref<{ id: string, email: string, role: 'STUDENT' | 'COMPANY' | 'ADMIN' } | null>(null)
+const accessToken = ref<string | null>(null)
+const refreshToken = ref<string | null>(null)
+const studentProfile = ref<{ user_id: string, current_semester: number } | null>(null)
+const consent = ref<{ user_id: string, is_accepted: boolean } | null>(null)
+const studentId = '11111111-1111-4111-8111-111111111111'
+const otherStudentId = '22222222-2222-4222-8222-222222222222'
+
+function authenticateStudent(semester = 8) {
+  isAuthenticated.value = true
+  userRole.value = 'STUDENT'
+  accessToken.value = 'synthetic-session'
+  user.value = { id: studentId, email: 'student@example.test', role: 'STUDENT' }
+  studentProfile.value = { user_id: studentId, current_semester: semester }
+  consent.value = { user_id: studentId, is_accepted: true }
+}
+
 const route = reactive({
   params: { id: 'challenge-1' },
   fullPath: '/challenges/challenge-1',
@@ -19,7 +43,18 @@ vi.mock('~/composables/useChallenges', () => ({
 }))
 
 vi.mock('~/composables/useAuth', () => ({
-  useAuth: () => ({ isAuthenticated, userRole }),
+  useAuth: () => ({
+    isAuthenticated,
+    userRole,
+    user,
+    accessToken,
+    refreshToken,
+    studentProfile,
+    consent,
+    initSession,
+    fetchProfile,
+    fetchConsent,
+  }),
 }))
 
 const challenge: PublicChallengeDetail = {
@@ -27,7 +62,7 @@ const challenge: PublicChallengeDetail = {
   company_id: 'company-1',
   company_name: 'Soluciones Tecnológicas del Oriente S.A.S.',
   title: 'Automatización logística con analítica predictiva',
-  description: 'Diseñar una solución para anticipar necesidades de inventario.',
+  description: '## Objetivo\n\nDiseñar una solución para **anticipar necesidades** de inventario.\n\n- Integración API REST\n- Panel analítico',
   business_process: 'Cadena de suministro y gestión de inventarios.',
   status: 'OPEN',
   difficulty_level: 'INTERMEDIATE',
@@ -67,24 +102,106 @@ const AttachmentListStub = {
   `,
 }
 
+const UIconStub = {
+  name: 'UIcon',
+  props: ['name'],
+  template: '<span :data-icon="name" class="u-icon-stub" />',
+}
+
+const UModalStub = {
+  name: 'UModal',
+  props: ['open', 'title', 'description', 'dismissible', 'close', 'ui'],
+  emits: ['update:open'],
+  template: `
+    <section v-if="open" role="dialog" :aria-label="title" data-testid="application-modal">
+      <header>
+        <h2>{{ title }}</h2>
+        <button type="button" data-testid="close-application-modal" @click="$emit('update:open', false)">Cerrar</button>
+      </header>
+      <div><slot name="body" /></div>
+      <footer><slot name="footer" /></footer>
+    </section>
+  `,
+}
+
+let activeWrapper: ReturnType<typeof mount> | null = null
+
 function createWrapper() {
-  return mount(ChallengeDetailPage, {
+  activeWrapper?.unmount()
+  activeWrapper = mount(ChallengeDetailPage, {
     global: {
       stubs: {
         NuxtLink: NuxtLinkStub,
         AttachmentList: AttachmentListStub,
+        UIcon: UIconStub,
+        UModal: UModalStub,
       },
     },
   })
+  return activeWrapper
 }
 
-describe('Public challenge detail page', () => {
+describe('safeRichText sanitizer', () => {
+  it('renders Markdown formatting, nested lists, and preserves generics in code while neutralizing XSS vectors (B-03)', () => {
+    const dirty = [
+      '## Contexto real',
+      'Texto con **énfasis**, _cursiva_, `List<String> users`, [enlace seguro](https://ufps.edu.co), [no https](http://insecure.test), [creds](https://user:pass@evil.test/secret) y [xss](javascript:alert(1)).',
+      '1. Paso principal\n  - Subpunto **técnico** con `Map<UUID, User>`\n  - Subpunto con [enlace](https://docs.ufps.edu.co/guia)',
+      '```java\nList<String> users = getUsers();\n<script>literalInCode()</script>\n```',
+      '<script>alert("xss")</script>',
+      '<img src="x" onerror="alert(1)">',
+      '<div onclick="alert(2)">peligroso</div>',
+      '<svg onload="alert(3)"></svg>',
+      '<iframe src="https://evil.test"></iframe>',
+      '<a href="data:text/html,<script>alert(1)</script>">malicioso</a>',
+    ].join('\n\n')
+
+    const richText = mount(SafeRichTextContent, { props: { content: dirty } })
+    const html = richText.html()
+
+    expect(html).toContain('<h3')
+    expect(html).toContain('Contexto real')
+    expect(html).toContain('<strong')
+    expect(html).toContain('<em')
+    expect(html).toContain('List&lt;String&gt; users')
+    expect(html).toContain('Map&lt;UUID, User&gt;')
+    expect(html).toContain('<pre')
+    expect(html).toContain('href="https://ufps.edu.co/"')
+    expect(html).toContain('href="https://docs.ufps.edu.co/guia"')
+    expect(html).toContain('<ol')
+    expect(html).toContain('<ul')
+    expect(html).not.toContain('http://insecure.test')
+    expect(html).not.toContain('user:pass@')
+    expect(html).not.toContain('<script>')
+    expect(html).toContain('&lt;script&gt;literalInCode()&lt;/script&gt;')
+    expect(html).not.toContain('<img')
+    expect(html).not.toContain('<svg')
+    expect(html).not.toContain('<iframe')
+    expect(html).not.toContain('onerror=')
+    expect(html).not.toContain('onclick=')
+    expect(html).not.toContain('javascript:')
+    expect(html).not.toContain('data:text/html')
+    richText.unmount()
+  })
+})
+
+describe('Public challenge detail page redesign', () => {
   beforeEach(() => {
     route.params.id = 'challenge-1'
     route.fullPath = '/challenges/challenge-1'
     isAuthenticated.value = false
     userRole.value = null
+    user.value = null
+    accessToken.value = null
+    refreshToken.value = null
+    studentProfile.value = null
+    consent.value = null
+
     getCatalogChallenge.mockReset().mockResolvedValue({ ...challenge })
+    apiFetch.mockReset()
+    initSession.mockReset().mockResolvedValue(true)
+    fetchProfile.mockReset().mockResolvedValue(null)
+    fetchConsent.mockReset().mockResolvedValue(null)
     routerPush.mockReset()
     addToast.mockReset()
 
@@ -92,13 +209,16 @@ describe('Public challenge detail page', () => {
     vi.stubGlobal('useRouter', () => ({ push: routerPush }))
     vi.stubGlobal('useToast', () => ({ add: addToast }))
     vi.stubGlobal('useHead', vi.fn())
+    vi.stubGlobal('useApi', () => ({ apiFetch }))
   })
 
   afterEach(() => {
+    activeWrapper?.unmount()
+    activeWrapper = null
     vi.unstubAllGlobals()
   })
 
-  it('loads and renders the complete privacy-safe challenge projection', async () => {
+  it('loads and renders the privacy-safe detail, Law 1581 privacy notice, structured Markdown, and read-only attachments', async () => {
     getCatalogChallenge.mockResolvedValueOnce(Object.assign(
       { ...challenge },
       {
@@ -110,33 +230,95 @@ describe('Public challenge detail page', () => {
     const wrapper = createWrapper()
     await flushPromises()
 
-    expect(getCatalogChallenge).toHaveBeenCalledWith('challenge-1')
+    expect(getCatalogChallenge).toHaveBeenCalledWith('challenge-1', expect.any(AbortSignal))
     expect(wrapper.text()).toContain(challenge.title)
     expect(wrapper.text()).toContain('Soluciones Tecnológicas del Oriente S.A.S.')
-    expect(wrapper.text()).toContain(challenge.description)
+    expect(wrapper.get('[data-testid="challenge-description-content"]').html()).toContain('anticipar necesidades')
+    expect(wrapper.get('[data-testid="challenge-description-content"]').html()).toContain('<ul')
     expect(wrapper.text()).toContain(challenge.business_process)
     expect(wrapper.text()).toContain('#Vue')
     expect(wrapper.text()).toContain('Analítica de Datos')
     expect(wrapper.text()).toContain('Híbrido')
     expect(wrapper.text()).toContain('Intermedio')
-    expect(wrapper.text()).toContain('12 de noviembre de 2026')
+    expect(wrapper.text()).toContain('Creado el 12 de noviembre de 2026')
+    expect(wrapper.get('[data-testid="law-1581-privacy-card"]').text()).toContain(
+      'Los datos de contacto corporativos están protegidos por la Ley 1581 y se revelarán mutuamente cuando la empresa acepte tu postulación académica.',
+    )
+
+    // Private contact details must never leak
     expect(wrapper.text()).not.toContain('Contacto Privado')
     expect(wrapper.text()).not.toContain('privado@empresa.com')
     expect(wrapper.text()).not.toContain('+57 300 000 0000')
+    expect(wrapper.html()).not.toContain('privado@empresa.com')
 
     const attachmentList = wrapper.getComponent(AttachmentListStub)
     expect(attachmentList.props('attachments')).toEqual(challenge.attachments)
     expect(attachmentList.props('canDelete')).toBe(false)
   })
 
-  it('renders the 404 fallback for a missing or closed challenge', async () => {
+  it('uses "Empresa sin nombre público" fallback when company_name is absent and renders real SafeRichTextContent code blocks without stripping generics (B-03, B-06)', async () => {
+    getCatalogChallenge.mockResolvedValueOnce({
+      ...challenge,
+      company_name: undefined,
+      description: '## Stack\n\nSoporte para `List<String> users`.\n\n```\n<div onclick="x">List<String></div>\n```\n\n<img src="x" onerror="alert(1)">',
+    })
+    const wrapper = createWrapper()
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="challenge-hero"]').text()).toContain('Empresa sin nombre público')
+    expect(wrapper.get('[data-testid="challenge-hero"]').text()).not.toContain('Empresa Aliada UFPS')
+    const descEl = wrapper.get('[data-testid="challenge-description-content"]')
+    expect(descEl.text()).toContain('List<String> users')
+    expect(descEl.find('pre code').text()).toContain('<div onclick="x">List<String></div>')
+    expect(descEl.find('img').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="challenge-detail-grid"]').classes()).toContain(
+      'lg:grid-cols-[minmax(0,7fr)_minmax(0,3fr)]',
+    )
+  })
+
+  it('renders 404/non-OPEN/invalid ID fallback cleanly without showing CTA', async () => {
     getCatalogChallenge.mockRejectedValueOnce({ status: 404 })
     const wrapper = createWrapper()
     await flushPromises()
 
+    expect(wrapper.find('[data-testid="challenge-not-found"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('Reto no disponible')
-    expect(wrapper.text()).toContain('fue cerrado o ya no está publicado')
     expect(wrapper.find('[data-testid="apply-challenge"]').exists()).toBe(false)
+
+    // Invalid UUID (422 from FastAPI) also renders unavailable fallback
+    getCatalogChallenge.mockRejectedValueOnce({ status: 422 })
+    route.params.id = 'not-a-valid-uuid'
+    await flushPromises()
+    expect(wrapper.find('[data-testid="challenge-not-found"]').exists()).toBe(true)
+  })
+
+  it('prevents stale route switch responses from overwriting the latest challenge', async () => {
+    let resolveFirst: ((value: PublicChallengeDetail) => void) | undefined
+    getCatalogChallenge
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve }))
+      .mockResolvedValueOnce({
+        ...challenge,
+        id: 'challenge-2',
+        title: 'Segundo reto más reciente',
+      })
+
+    const wrapper = createWrapper()
+    route.params.id = 'challenge-2'
+    route.fullPath = '/challenges/challenge-2'
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Segundo reto más reciente')
+
+    // First delayed promise resolves late -> must be ignored cleanly
+    resolveFirst?.({
+      ...challenge,
+      id: 'challenge-1',
+      title: 'Primer reto obsoleto',
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('Segundo reto más reciente')
+    expect(wrapper.text()).not.toContain('Primer reto obsoleto')
   })
 
   it('shows a recoverable error and retries the request', async () => {
@@ -146,8 +328,8 @@ describe('Public challenge detail page', () => {
     const wrapper = createWrapper()
     await flushPromises()
 
-    expect(wrapper.get('[role="alert"]').text()).toContain('Gateway unavailable')
-    await wrapper.get('[role="alert"] button').trigger('click')
+    expect(wrapper.get('[data-testid="challenge-load-error"]').text()).toContain('Gateway unavailable')
+    await wrapper.get('[data-testid="challenge-load-error"] button').trigger('click')
     await flushPromises()
 
     expect(getCatalogChallenge).toHaveBeenCalledTimes(2)
@@ -166,35 +348,448 @@ describe('Public challenge detail page', () => {
     })
   })
 
-  it('prevents company accounts from applying to a challenge', async () => {
+  it('disables application CTA for company accounts with the required Spanish tooltip and blocks clicks', async () => {
     isAuthenticated.value = true
     userRole.value = 'COMPANY'
+    user.value = { id: otherStudentId, email: 'company@example.test', role: 'COMPANY' }
+    accessToken.value = 'synthetic-company-session'
     const wrapper = createWrapper()
     await flushPromises()
 
-    await wrapper.get('[data-testid="apply-challenge"]').trigger('click')
+    const applyButton = wrapper.get('[data-testid="apply-challenge"]')
+    expect(applyButton.attributes('disabled')).toBeDefined()
+    expect(applyButton.attributes('title')).toBe('Solo los estudiantes pueden postularse a los retos.')
+    expect(wrapper.get('[data-testid="company-cta-tooltip"]').text()).toBe(
+      'Solo los estudiantes pueden postularse a los retos.',
+    )
 
+    await applyButton.trigger('click')
     expect(routerPush).not.toHaveBeenCalled()
-    expect(addToast).toHaveBeenCalledWith(expect.objectContaining({
-      title: 'Acción exclusiva para estudiantes',
-      color: 'warning',
-    }))
+    expect(apiFetch).not.toHaveBeenCalled()
   })
 
-  it('routes authenticated students to the application flow', async () => {
-    isAuthenticated.value = true
-    userRole.value = 'STUDENT'
+  it('blocks ineligible students (semester < 6 or missing consent) with clear guidance', async () => {
+    authenticateStudent(4)
+
     const wrapper = createWrapper()
     await flushPromises()
 
-    expect(wrapper.get('[data-testid="apply-challenge"]').text()).toContain(
-      'Postularme a este reto',
-    )
-    await wrapper.get('[data-testid="apply-challenge"]').trigger('click')
+    expect(wrapper.get('[data-testid="student-ineligible-banner"]').text()).toContain('6.º a 10.º semestre')
+    expect(wrapper.get('[data-testid="apply-challenge"]').attributes('disabled')).toBeDefined()
+  })
 
-    expect(routerPush).toHaveBeenCalledWith({
-      path: '/applications/new',
-      query: { challenge_id: 'challenge-1' },
+  it('opens the application modal for eligible students, validates 50-char minimum, submits to POST /applications/, and handles 409 duplicate cleanly', async () => {
+    authenticateStudent()
+
+    apiFetch
+      .mockResolvedValueOnce({
+        id: 'app-uuid-1',
+        student_id: studentId,
+        challenge_id: 'challenge-1',
+        motivation_letter: 'A'.repeat(60),
+        status: 'PENDING',
+        created_at: '2026-11-25T19:00:00Z',
+        updated_at: '2026-11-25T19:00:00Z',
+      })
+
+    const wrapper = createWrapper()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="apply-challenge"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="application-modal"]').exists()).toBe(true)
+    const submitBtn = wrapper.get('[data-testid="submit-application-btn"]')
+    expect(submitBtn.attributes('disabled')).toBeDefined()
+
+    const validMotivation = 'Tengo sólida experiencia con Vue, Python y SQL aplicando arquitectura moderna en proyectos UFPS.'
+    await wrapper.get('[data-testid="application-motivation-input"]').setValue(validMotivation)
+    expect(submitBtn.attributes('disabled')).toBeUndefined()
+
+    await wrapper.get('#challenge-application-form').trigger('submit')
+    await flushPromises()
+
+    expect(apiFetch).toHaveBeenCalledWith('/applications/', {
+      method: 'POST',
+      body: {
+        challenge_id: 'challenge-1',
+        motivation_letter: validMotivation,
+      },
     })
+    expect(addToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Postulación enviada correctamente',
+      color: 'success',
+    }))
+    expect(wrapper.get('[data-testid="apply-challenge"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="apply-challenge"]').text()).toContain('Postulación enviada')
+  })
+
+  it('displays server 409 duplicate application error inside the modal cleanly', async () => {
+    authenticateStudent()
+
+    apiFetch.mockRejectedValueOnce({ status: 409 })
+
+    const wrapper = createWrapper()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="apply-challenge"]').trigger('click')
+    await wrapper.get('[data-testid="application-motivation-input"]').setValue(
+      'Cuento con experiencia práctica en analítica predictiva e integración de microservicios.',
+    )
+    await wrapper.get('#challenge-application-form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="application-submit-error"]').text()).toContain(
+      'Ya enviaste una postulación para este reto.',
+    )
+    expect(wrapper.get('[data-testid="submit-application-btn"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('#challenge-application-form').trigger('submit')
+    expect(apiFetch).toHaveBeenCalledTimes(1)
+    expect(addToast).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="apply-challenge"]').text()).toContain('Postulación enviada')
+    expect(wrapper.get('[data-testid="apply-challenge-mobile"]').text()).toContain('Postulado')
+    await wrapper.get('[data-testid="close-application-modal"]').trigger('click')
+    expect(wrapper.find('[data-testid="application-modal"]').exists()).toBe(false)
+  })
+
+  it('renders the public detail while the student profile is still loading', async () => {
+    authenticateStudent()
+    studentProfile.value = null
+
+    let finishProfile!: () => void
+    fetchProfile.mockImplementationOnce(() => new Promise<typeof studentProfile.value>((resolve) => {
+      finishProfile = () => {
+        studentProfile.value = { user_id: studentId, current_semester: 8 }
+        resolve(studentProfile.value)
+      }
+    }))
+
+    const wrapper = createWrapper()
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="challenge-hero"]').text()).toContain(challenge.title)
+    const cta = wrapper.get<HTMLButtonElement>('[data-testid="apply-challenge"]')
+    expect(cta.element.disabled).toBe(true)
+    expect(cta.text()).toContain('Verificando elegibilidad')
+
+    finishProfile()
+    await flushPromises()
+    expect(cta.element.disabled).toBe(false)
+  })
+
+  it('restores student session via initSession when reloading the public detail route with a refresh cookie', async () => {
+    isAuthenticated.value = true
+    refreshToken.value = 'refresh-cookie'
+    accessToken.value = null
+    userRole.value = null
+    initSession.mockImplementationOnce(async () => {
+      authenticateStudent()
+      return true
+    })
+
+    const wrapper = createWrapper()
+    await flushPromises()
+
+    expect(initSession).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-testid="apply-challenge"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-testid="apply-challenge"]').text()).toContain('Postularme a este reto')
+  })
+
+  it('enforces strict student eligibility matrix: 6-10 semesters allowed, missing/error profile or consent disabled with recovery, non-student roles disabled (B-01)', async () => {
+    // 1. Missing profile & consent must NOT enable CTA, yet challenge detail renders cleanly with recovery action
+    authenticateStudent()
+    studentProfile.value = null
+    consent.value = null
+
+    const wrapper = createWrapper()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="challenge-hero"]').text()).toContain(challenge.title)
+    expect(wrapper.get('[data-testid="apply-challenge"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="student-ineligible-banner"]').exists()).toBe(true)
+
+    // Recovery succeeds when profile & consent load cleanly for matching user_id
+    fetchProfile.mockImplementationOnce(async () => {
+      studentProfile.value = { user_id: studentId, current_semester: 6 }
+      return studentProfile.value
+    })
+    fetchConsent.mockImplementationOnce(async () => {
+      consent.value = { user_id: studentId, is_accepted: true }
+      return consent.value
+    })
+    await wrapper.get('[data-testid="retry-eligibility-btn"]').trigger('click')
+    await flushPromises()
+    // Semester 6 on challenge with min_semester=7 is eligible (range 6-10) and keeps the published minimum visible
+    expect(wrapper.get('[data-testid="apply-challenge"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).toContain('Semestre mínimo: 7.º semestre')
+
+    // Semester 10 is eligible
+    studentProfile.value = { user_id: studentId, current_semester: 10 }
+    await flushPromises()
+    expect(wrapper.get('[data-testid="apply-challenge"]').attributes('disabled')).toBeUndefined()
+
+    // Semester 5 and non-integer semester are blocked
+    studentProfile.value = { user_id: studentId, current_semester: 5 }
+    await flushPromises()
+    expect(wrapper.get('[data-testid="apply-challenge"]').attributes('disabled')).toBeDefined()
+
+    studentProfile.value = { user_id: studentId, current_semester: 7.5 }
+    await flushPromises()
+    expect(wrapper.get('[data-testid="apply-challenge"]').attributes('disabled')).toBeDefined()
+
+    // Rejected consent blocks CTA
+    studentProfile.value = { user_id: studentId, current_semester: 8 }
+    consent.value = { user_id: studentId, is_accepted: false }
+    await flushPromises()
+    expect(wrapper.get('[data-testid="apply-challenge"]').attributes('disabled')).toBeDefined()
+
+    // Mismatched profile user_id blocks CTA
+    consent.value = { user_id: studentId, is_accepted: true }
+    studentProfile.value = { user_id: otherStudentId, current_semester: 8 }
+    await flushPromises()
+    expect(wrapper.get('[data-testid="apply-challenge"]').attributes('disabled')).toBeDefined()
+
+    // ADMIN role is blocked cleanly
+    userRole.value = 'ADMIN'
+    user.value = { id: 'admin-1', email: 'admin@ufps.edu.co', role: 'ADMIN' }
+    await flushPromises()
+    expect(wrapper.get('[data-testid="apply-challenge"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="company-cta-tooltip"]').text()).toBe(
+      'Solo los estudiantes pueden postularse a los retos.',
+    )
+  })
+
+  it('isolates in-flight applications against route switch, account change, logout, double submit, and preserves letter on 502/503 (B-02)', async () => {
+    isAuthenticated.value = true
+    userRole.value = 'STUDENT'
+    user.value = { id: studentId, email: 'a@ufps.edu.co', role: 'STUDENT' }
+    accessToken.value = 'tok-a'
+    studentProfile.value = { user_id: studentId, current_semester: 8 }
+    consent.value = { user_id: studentId, is_accepted: true }
+
+    let resolveFirstPost: ((v: unknown) => void) | undefined
+    let rejectRecoverable: ((e: unknown) => void) | undefined
+    apiFetch
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirstPost = resolve }))
+      .mockImplementationOnce(() => new Promise((_res, rej) => { rejectRecoverable = rej }))
+      .mockResolvedValueOnce({
+        id: 'app-retry-ok',
+        student_id: otherStudentId,
+        challenge_id: 'challenge-2',
+        motivation_letter: 'A'.repeat(60),
+        status: 'PENDING',
+        created_at: '2026-11-25T20:00:00Z',
+        updated_at: '2026-11-25T20:00:00Z',
+      })
+
+    getCatalogChallenge
+      .mockResolvedValueOnce({ ...challenge, id: 'challenge-1' })
+      .mockResolvedValueOnce({ ...challenge, id: 'challenge-2', title: 'Segundo reto abierto' })
+
+    const wrapper = createWrapper()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="apply-challenge"]').trigger('click')
+    const letter = 'Carta de motivación suficientemente extensa para demostrar la validación completa del formulario.'
+    await wrapper.get('[data-testid="application-motivation-input"]').setValue(letter)
+
+    // Double submit triggers only ONE network request
+    const form = wrapper.get('#challenge-application-form')
+    void form.trigger('submit')
+    void form.trigger('submit')
+    await flushPromises()
+    expect(apiFetch).toHaveBeenCalledTimes(1)
+
+    // Switch challenge & user while first POST is still pending -> letter cleared, stale 201 ignored
+    route.params.id = 'challenge-2'
+    route.fullPath = '/challenges/challenge-2'
+    user.value = { id: otherStudentId, email: 'b@ufps.edu.co', role: 'STUDENT' }
+    accessToken.value = 'tok-b'
+    studentProfile.value = { user_id: otherStudentId, current_semester: 9 }
+    consent.value = { user_id: otherStudentId, is_accepted: true }
+    await flushPromises()
+
+    resolveFirstPost?.({
+      id: 'app-stale-1',
+      student_id: studentId,
+      challenge_id: 'challenge-1',
+      motivation_letter: letter,
+      status: 'PENDING',
+      created_at: '2026-11-25T20:00:00Z',
+      updated_at: '2026-11-25T20:00:00Z',
+    })
+    await flushPromises()
+
+    // Challenge 2 for Student B must NOT be marked applied and no toast may fire
+    expect(addToast).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="apply-challenge"]').text()).toContain('Postularme a este reto')
+
+    // Open modal on Challenge 2 as Student B, hit 502 recoverable -> letter MUST stay intact & retry succeeds
+    await wrapper.get('[data-testid="apply-challenge"]').trigger('click')
+    const letterB = 'Carta nueva del estudiante B con contenido válido y específico para el segundo reto.'
+    const textarea = wrapper.get('[data-testid="application-motivation-input"]')
+    await textarea.setValue(letterB)
+    await wrapper.get('#challenge-application-form').trigger('submit')
+
+    rejectRecoverable?.({ status: 502 })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="application-submit-error"]').text()).toContain('no está disponible temporalmente')
+    expect((wrapper.get('[data-testid="application-motivation-input"]').element as HTMLTextAreaElement).value).toBe(letterB)
+    expect(addToast).not.toHaveBeenCalled()
+
+    await wrapper.get('#challenge-application-form').trigger('submit')
+    await flushPromises()
+    expect(addToast).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-testid="apply-challenge"]').text()).toContain('Postulación enviada')
+  })
+
+  it.each([
+    ['los permisos cambian a empresa', () => { userRole.value = 'COMPANY' }],
+    ['se retira el consentimiento', () => { consent.value = { user_id: studentId, is_accepted: false } }],
+    ['cambia el semestre', () => { studentProfile.value = { user_id: studentId, current_semester: 11 } }],
+    ['se carga el perfil de otra persona', () => { studentProfile.value = { user_id: otherStudentId, current_semester: 8 } }],
+    ['se carga el consentimiento de otra persona', () => { consent.value = { user_id: otherStudentId, is_accepted: true } }],
+  ])('bloquea el formulario abierto cuando %s', async (_scenario, revoke) => {
+    authenticateStudent()
+    const wrapper = createWrapper()
+    await flushPromises()
+    await wrapper.get('[data-testid="apply-challenge"]').trigger('click')
+    await wrapper.get('[data-testid="application-motivation-input"]').setValue('A'.repeat(60))
+    expect(wrapper.get('[data-testid="submit-application-btn"]').attributes('disabled')).toBeUndefined()
+
+    revoke()
+    await wrapper.get('#challenge-application-form').trigger('submit')
+    expect(apiFetch).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="submit-application-btn"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="application-submit-error"]').text()).toContain('Tu elegibilidad cambió')
+  })
+
+  it('rejects apparent sessions that lack the authenticated user UUID', async () => {
+    authenticateStudent()
+    user.value = null
+    const wrapper = createWrapper()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="challenge-hero"]').text()).toContain(challenge.title)
+    expect(wrapper.get('[data-testid="apply-challenge"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="student-ineligible-banner"]').text()).toContain('confirmar tu identidad')
+    expect(wrapper.find('[data-testid="retry-eligibility-btn"]').exists()).toBe(true)
+  })
+
+  it('cannot reuse a cached profile if the forced profile refresh fails', async () => {
+    authenticateStudent()
+    studentProfile.value = null
+    const wrapper = createWrapper()
+    await flushPromises()
+
+    fetchProfile.mockImplementationOnce(async () => {
+      studentProfile.value = { user_id: studentId, current_semester: 8 }
+      return null
+    })
+    fetchConsent.mockResolvedValueOnce(consent.value)
+    await wrapper.get('[data-testid="retry-eligibility-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="apply-challenge"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="student-ineligible-banner"]').text()).toContain('actualizar tu elegibilidad')
+
+    fetchProfile.mockResolvedValueOnce(studentProfile.value)
+    fetchConsent.mockResolvedValueOnce(consent.value)
+    await wrapper.get('[data-testid="retry-eligibility-btn"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="apply-challenge"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it.each([404, 422])('stops attempts on both layouts after a terminal %s', async (status) => {
+    authenticateStudent()
+    apiFetch.mockRejectedValueOnce({ status })
+    const wrapper = createWrapper()
+    await flushPromises()
+    await wrapper.get('[data-testid="apply-challenge"]').trigger('click')
+    await wrapper.get('[data-testid="application-motivation-input"]').setValue('A'.repeat(60))
+    const form = wrapper.get('#challenge-application-form')
+    await form.trigger('submit')
+    await flushPromises()
+    await form.trigger('submit')
+    expect(apiFetch).toHaveBeenCalledTimes(1)
+    expect(addToast).not.toHaveBeenCalled()
+    expect(wrapper.get('[data-testid="application-submit-error"]').text()).toContain('reto')
+    expect(wrapper.get('[data-testid="submit-application-btn"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="apply-challenge"]').text()).toContain('Reto no disponible')
+    expect(wrapper.get('[data-testid="apply-challenge-mobile"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-testid="close-application-modal"]').trigger('click')
+    expect(wrapper.find('#challenge-application-form').exists()).toBe(false)
+  })
+
+  it('does not submit the previous account form during the same update cycle', async () => {
+    authenticateStudent()
+    const wrapper = createWrapper()
+    await flushPromises()
+    await wrapper.get('[data-testid="apply-challenge"]').trigger('click')
+    await wrapper.get('[data-testid="application-motivation-input"]').setValue('A'.repeat(60))
+    const previousForm = wrapper.get('#challenge-application-form')
+
+    user.value = { id: otherStudentId, email: 'other@example.test', role: 'STUDENT' }
+    accessToken.value = 'other-synthetic-session'
+    studentProfile.value = { user_id: otherStudentId, current_semester: 8 }
+    consent.value = { user_id: otherStudentId, is_accepted: true }
+    await previousForm.trigger('submit')
+    await flushPromises()
+
+    expect(apiFetch).not.toHaveBeenCalled()
+    expect(wrapper.find('#challenge-application-form').exists()).toBe(false)
+  })
+
+  it('closes the modal on logout and ignores a late result for that account', async () => {
+    authenticateStudent()
+    let rejectPost!: (error: unknown) => void
+    apiFetch.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectPost = reject }))
+    const wrapper = createWrapper()
+    await flushPromises()
+    await wrapper.get('[data-testid="apply-challenge"]').trigger('click')
+    await wrapper.get('[data-testid="application-motivation-input"]').setValue('A'.repeat(60))
+    await wrapper.get('#challenge-application-form').trigger('submit')
+    isAuthenticated.value = false
+    accessToken.value = null
+    userRole.value = null
+    user.value = null
+    await flushPromises()
+    rejectPost({ status: 409 })
+    await flushPromises()
+    expect(wrapper.find('#challenge-application-form').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="apply-challenge"]').text()).toContain('Inicia sesión')
+    expect(addToast).not.toHaveBeenCalled()
+  })
+
+  it('handles legacy HTML/blockquote/heading formatting, HTTP status error formatters, and read-only attachment edge cases cleanly', async () => {
+    const legacyHtml = [
+      '<h1>Título legacy</h1>',
+      '<h4>Subtítulo</h4>',
+      '<blockquote>Cita importante con <b>negrita</b> y <i>cursiva</i></blockquote>',
+      '<pre><code>Array&lt;String&gt; items;</code></pre>',
+      '<p>Línea 1<br>Línea 2 con <a href="https://ufps.edu.co">UFPS</a></p>',
+    ].join('\n')
+
+    const richText = mount(SafeRichTextContent, { props: { content: legacyHtml } })
+    const rendered = richText.html()
+    expect(rendered).toContain('<h3')
+    expect(rendered).toContain('<h4')
+    expect(rendered).toContain('<blockquote')
+    expect(rendered).toContain('Array&lt;String&gt; items;')
+    expect(rendered).toContain('href="https://ufps.edu.co/"')
+    richText.unmount()
+
+    expect(formatApplicationError({ status: 401 })).toContain('sesión ha expirado')
+    expect(formatApplicationError({ status: 403 })).toContain('Solo los estudiantes')
+    expect(formatApplicationError({ status: 404 })).toContain('ya no se encuentra disponible')
+    expect(formatApplicationError({ status: 422 })).toContain('no se encuentra abierto')
+    expect(formatApplicationError({ status: 503 })).toContain('no está disponible temporalmente')
+    expect(formatApplicationError(new Error('Fallo de red'))).toContain('Fallo de red')
+
+    // Challenge without attachments renders cleanly
+    getCatalogChallenge.mockResolvedValueOnce({
+      ...challenge,
+      attachments: [],
+    })
+    const wrapper = createWrapper()
+    await flushPromises()
+    expect(wrapper.getComponent(AttachmentListStub).props('attachments')).toEqual([])
   })
 })
