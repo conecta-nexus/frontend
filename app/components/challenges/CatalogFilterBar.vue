@@ -84,6 +84,13 @@ function syncFromRoute(query = route.query) {
   skillsList.value = catalogTerms(filters.skill)
 }
 
+function clearDraftFilters() {
+  syncFromRoute({})
+  skillInput.value = ''
+}
+
+defineExpose({ clearDraftFilters })
+
 // Active filter count
 const activeFiltersCount = computed(() => {
   let count = 0

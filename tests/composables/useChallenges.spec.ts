@@ -80,4 +80,21 @@ describe('useChallenges public catalog', () => {
     expect(catalogLoading.value).toBe(false)
     expect(challenges.value).toEqual([])
   })
+
+  it('keeps the backend zero-results metadata in the catalog response', async () => {
+    const response = {
+      items: [], total: 0, page: 1, pages: 1, limit: 10,
+      empty_state: {
+        code: 'NO_MATCHING_CHALLENGES',
+        message: 'No challenges match your selected search criteria.',
+        query_params: { q: 'Unknown' },
+        suggested_reset: true,
+        total_active_challenges: 14,
+      },
+    }
+    apiFetch.mockResolvedValueOnce(response)
+    const { fetchCatalog, catalog } = useChallenges()
+    await expect(fetchCatalog({ q: 'Unknown' })).resolves.toEqual(response)
+    expect(catalog.value?.empty_state).toEqual(response.empty_state)
+  })
 })

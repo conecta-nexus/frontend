@@ -28,7 +28,7 @@ function queryInteger(value: unknown, max: number) {
 }
 
 export function catalogTerms(...values: (LocationQuery[string] | undefined)[]): string[] {
-  return [...new Set(values.flat().flatMap(value => value?.split(',') ?? [])
+  return [...new Set(values.flat().flatMap(value => typeof value === 'string' ? value.split(',') : [])
     .map(term => term.trim()).filter(Boolean))]
 }
 

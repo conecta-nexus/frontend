@@ -4,7 +4,7 @@ import type {
   Challenge,
   ChallengeAttachment,
   ChallengeCatalogFilter,
-  ChallengeCatalogItem,
+  ChallengeCatalogResponse,
   ChallengeClosePayload,
   ChallengeCreatePayload,
   ChallengeUpdatePayload,
@@ -30,7 +30,7 @@ export function useChallenges() {
   const pagination = useState<PaginatedResponse<Challenge> | null>('challenges_pagination', () => null)
   const loading = useState<boolean>('challenges_loading', () => false)
   const error = useState<string | null>('challenges_error', () => null)
-  const catalog = useState<PaginatedResponse<ChallengeCatalogItem> | null>('challenges_catalog', () => null)
+  const catalog = useState<ChallengeCatalogResponse | null>('challenges_catalog', () => null)
   const catalogLoading = useState('challenges_catalog_loading', () => false)
   const catalogError = useState<string | null>('challenges_catalog_error', () => null)
   const catalogRequest = useState('challenges_catalog_request', () => 0)
@@ -220,7 +220,7 @@ export function useChallenges() {
    */
   async function fetchCatalog(
     filters: ChallengeCatalogFilter = {},
-  ): Promise<PaginatedResponse<ChallengeCatalogItem>> {
+  ): Promise<ChallengeCatalogResponse> {
     const request = ++catalogRequest.value
     catalogLoading.value = true
     catalogError.value = null
@@ -240,7 +240,7 @@ export function useChallenges() {
       if (filters.page) query.page = filters.page
       if (filters.limit || filters.page_size) query.limit = filters.limit || filters.page_size || 10
 
-      const response = await apiFetch<PaginatedResponse<ChallengeCatalogItem>>('/challenges/catalog', {
+      const response = await apiFetch<ChallengeCatalogResponse>('/challenges/catalog', {
         method: 'GET',
         query,
       })
