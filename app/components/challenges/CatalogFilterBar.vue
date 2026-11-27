@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import type { ChallengeCatalogFilter, DifficultyLevel, Modality } from '~/types/challenge'
+import { catalogRequestKey, catalogTerms, readCatalogQuery, resetCatalogQuery } from '~/utils/catalogQuery'
 
 withDefaults(
   defineProps<{
@@ -67,29 +68,28 @@ const isMobileExpanded = ref(false)
 
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 
-// Initialize filters from URL query parameters
-function syncFromRoute() {
-  const q = route.query
-  searchInput.value = typeof q.q === 'string' ? q.q : ''
-  selectedSector.value = typeof q.sector === 'string' ? q.sector : (typeof q.economic_sector === 'string' ? q.economic_sector : '')
-  selectedModality.value = typeof q.modality === 'string' && ['REMOTE', 'HYBRID', 'ON_SITE'].includes(q.modality)
-    ? (q.modality as Modality)
-    : ''
-  selectedDifficulty.value = typeof q.difficulty === 'string' && ['BEGINNER', 'INTERMEDIATE', 'ADVANCED'].includes(q.difficulty)
-    ? (q.difficulty as DifficultyLevel)
-    : (typeof q.difficulty_level === 'string' && ['BEGINNER', 'INTERMEDIATE', 'ADVANCED'].includes(q.difficulty_level)
-        ? (q.difficulty_level as DifficultyLevel)
-        : '')
-  selectedKnowledgeArea.value = typeof q.knowledge_area === 'string' ? q.knowledge_area : ''
-
-  if (typeof q.skill === 'string' && q.skill.trim()) {
-    skillsList.value = [q.skill.trim()]
-  } else if (Array.isArray(q.skill)) {
-    skillsList.value = q.skill.map(s => String(s).trim()).filter(Boolean)
-  } else {
-    skillsList.value = []
-  }
+function cancelPendingSearch() {
+  if (debounceTimer !== null) clearTimeout(debounceTimer)
+  debounceTimer = null
 }
+
+function syncFromRoute(query = route.query) {
+  cancelPendingSearch()
+  const filters = readCatalogQuery(query)
+  searchInput.value = filters.q ?? ''
+  selectedSector.value = filters.sector ?? ''
+  selectedModality.value = filters.modality ?? ''
+  selectedDifficulty.value = filters.difficulty ?? ''
+  selectedKnowledgeArea.value = filters.knowledge_area ?? ''
+  skillsList.value = catalogTerms(filters.skill)
+}
+
+function clearDraftFilters() {
+  syncFromRoute({})
+  skillInput.value = ''
+}
+
+defineExpose({ clearDraftFilters })
 
 // Active filter count
 const activeFiltersCount = computed(() => {
@@ -99,62 +99,51 @@ const activeFiltersCount = computed(() => {
   if (selectedModality.value) count++
   if (selectedDifficulty.value) count++
   if (selectedKnowledgeArea.value) count++
+  if (readCatalogQuery(route.query).min_semester) count++
   count += skillsList.value.length
   return count
 })
 
 // Build current filter object
-function getCurrentFilters(): ChallengeCatalogFilter {
-  const filters: ChallengeCatalogFilter = {}
-  if (searchInput.value.trim()) filters.q = searchInput.value.trim()
-  if (selectedSector.value) filters.sector = selectedSector.value
-  if (selectedModality.value) filters.modality = selectedModality.value
-  if (selectedDifficulty.value) filters.difficulty = selectedDifficulty.value
-  if (selectedKnowledgeArea.value) filters.knowledge_area = selectedKnowledgeArea.value
-  if (skillsList.value.length === 1) {
-    filters.skill = skillsList.value[0]
-  } else if (skillsList.value.length > 1) {
-    filters.skill = skillsList.value.join(',')
+function getCurrentFilters() {
+  return {
+    q: searchInput.value.trim(),
+    sector: selectedSector.value,
+    modality: selectedModality.value,
+    difficulty: selectedDifficulty.value,
+    knowledge_area: selectedKnowledgeArea.value,
+    skill: skillsList.value.join(','),
   }
-  return filters
 }
 
-// Push to router and emit
 async function applyFilters() {
+  cancelPendingSearch()
   const filters = getCurrentFilters()
-  const newQuery: Record<string, string> = {}
+  const aliases = ['economic_sector', 'difficulty_level', 'knowledge_areas', 'skills']
+  const newQuery = {
+    ...Object.fromEntries(Object.entries(route.query).filter(([key]) => !Object.hasOwn(filters, key) && !aliases.includes(key))),
+    ...Object.fromEntries(Object.entries(filters).filter(([, value]) => value)),
+  }
 
-  if (filters.q) newQuery.q = filters.q
-  if (filters.sector) newQuery.sector = filters.sector
-  if (filters.modality) newQuery.modality = filters.modality
-  if (filters.difficulty) newQuery.difficulty = filters.difficulty
-  if (filters.knowledge_area) newQuery.knowledge_area = filters.knowledge_area
-  if (filters.skill) newQuery.skill = filters.skill
-
-  // Only update route if query genuinely changed
+  if (catalogRequestKey(readCatalogQuery(newQuery)) === catalogRequestKey(readCatalogQuery(route.query))) return
+  delete newQuery.page
   await router.push({ query: newQuery })
-  emit('filter-change', filters)
+  emit('filter-change', readCatalogQuery(newQuery))
 }
 
 // Debounced search trigger
 function onSearchInput() {
-  if (debounceTimer) clearTimeout(debounceTimer)
-  debounceTimer = setTimeout(() => {
-    applyFilters()
-  }, 300)
+  cancelPendingSearch()
+  debounceTimer = setTimeout(applyFilters, 300)
 }
 
 // Skill tags handling
 function addSkill() {
-  const raw = skillInput.value.trim()
-  if (!raw) return
-  if (!skillsList.value.includes(raw)) {
-    skillsList.value.push(raw)
-    skillInput.value = ''
-    applyFilters()
-  } else {
-    skillInput.value = ''
-  }
+  const skills = catalogTerms(skillInput.value)
+  if (!skills.length) return
+  skillsList.value = catalogTerms(skillsList.value, skills)
+  skillInput.value = ''
+  applyFilters()
 }
 
 function removeSkill(skillToRemove: string) {
@@ -190,15 +179,14 @@ function clearKnowledgeArea() {
 
 // Global reset action
 function resetAllFilters() {
-  searchInput.value = ''
-  selectedSector.value = ''
-  selectedModality.value = ''
-  selectedDifficulty.value = ''
-  selectedKnowledgeArea.value = ''
+  const query = resetCatalogQuery(route.query)
+  syncFromRoute(query)
   skillInput.value = ''
-  skillsList.value = []
-
-  router.push({ query: {} })
+  const current = readCatalogQuery(route.query)
+  const unfiltered = { ...readCatalogQuery(query), page: current.page }
+  if (catalogRequestKey(unfiltered) !== catalogRequestKey(current)) {
+    router.push({ query })
+  }
   emit('reset')
   emit('filter-change', {})
 }
@@ -215,6 +203,12 @@ watch(
 onMounted(() => {
   syncFromRoute()
 })
+
+onBeforeRouteLeave((_to, _from, next) => {
+  cancelPendingSearch()
+  next()
+})
+onBeforeUnmount(cancelPendingSearch)
 </script>
 
 <template>
@@ -513,6 +507,7 @@ onMounted(() => {
         <span>Habilidad: {{ s }}</span>
         <button
           type="button"
+          :aria-label="`Quitar habilidad ${s}`"
           class="hover:text-red-500 font-black"
           @click="removeSkill(s)"
         >✕</button>

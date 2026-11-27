@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import { computed, nextTick, ref, onMounted, watch } from 'vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
 import StarterKit from '@tiptap/starter-kit'
 import { Markdown } from '@tiptap/markdown'
@@ -7,12 +7,14 @@ import type { ChallengeCreatePayload, DifficultyLevel, InitialChallengeStatus, M
 import { useAuth } from '~/composables/useAuth'
 
 interface Props {
-  loading?: boolean
+  busyAction?: InitialChallengeStatus | null
+  locked?: boolean
   initialData?: Partial<ChallengeCreatePayload>
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  loading: false,
+  busyAction: null,
+  locked: false,
   initialData: () => ({}),
 })
 
@@ -28,12 +30,20 @@ const formBusinessProcess = ref(props.initialData.business_process || '')
 const formEconomicSector = ref(props.initialData.economic_sector || '')
 const formModality = ref<Modality>(props.initialData.modality || 'REMOTE')
 const formDifficulty = ref<DifficultyLevel>(props.initialData.difficulty_level || 'INTERMEDIATE')
-const formMinSemester = ref<number>(props.initialData.min_semester || 7)
+const formMinSemester = ref<number>(props.initialData.min_semester ?? 7)
 const formDescription = ref(props.initialData.description || '')
 const formSkills = ref<string[]>([...(props.initialData.required_skills || [])])
-const skillInput = ref('')
-
-const errors = ref<Record<string, string>>({})
+const formAreas = ref<string[]>([...(props.initialData.knowledge_areas || [])])
+const tagInputs = ref({ skills: '', areas: '' })
+const tagFields = [
+  { key: 'skills', label: 'Habilidades requeridas', removeLabel: 'habilidad', tags: formSkills },
+  { key: 'areas', label: 'Áreas de conocimiento', removeLabel: 'área', tags: formAreas },
+] as const
+type TagField = typeof tagFields[number]
+type Field = 'title' | 'business_process' | 'description' | 'economic_sector' | 'modality' | 'difficulty_level' | 'min_semester'
+const touched = ref<Partial<Record<Field, boolean>>>({})
+const submitted = ref(false)
+const descriptionLength = ref(0)
 
 // Modality and Difficulty options
 const MODALITY_OPTIONS: { value: Modality; label: string; icon: string }[] = [
@@ -50,26 +60,19 @@ const DIFFICULTY_OPTIONS: { value: DifficultyLevel; label: string }[] = [
 
 const SEMESTER_OPTIONS = [6, 7, 8, 9, 10]
 
-// Semantic content detector for Markdown description
-function hasSemanticContent(markdown: string): boolean {
-  if (editor.value) {
-    return editor.value.getText().trim().length > 0
-  }
-  const clean = markdown.replace(/^[#\s\-*`>_~]+/gm, '').trim()
-  return clean.length > 0
-}
-
 // Accessible Tiptap attributes generator
 function getEditorAttributes(): Record<string, string> {
   const hasError = !!errors.value.description
   return {
     class: 'focus:outline-none min-h-[200px] p-4 text-text-main text-sm leading-relaxed max-w-none',
+    role: 'textbox',
+    'aria-multiline': 'true',
     'aria-label': 'Descripción de la problemática empresarial',
     'aria-required': 'true',
     'aria-invalid': hasError ? 'true' : 'false',
     'aria-describedby': hasError
-      ? 'challenge-description-help challenge-description-error'
-      : 'challenge-description-help',
+      ? 'challenge-description-help challenge-description-count challenge-description-error'
+      : 'challenge-description-help challenge-description-count',
   }
 }
 
@@ -90,26 +93,17 @@ const editor = useEditor({
   editorProps: {
     attributes: () => getEditorAttributes(),
   },
+  onCreate: ({ editor: activeEditor }) => {
+    descriptionLength.value = activeEditor.getText().trim().length
+  },
   onUpdate: ({ editor: activeEditor }) => {
     formDescription.value = activeEditor.getMarkdown()
-    if (errors.value.description && activeEditor.getText().trim().length > 0) {
-      delete errors.value.description
-    }
+    descriptionLength.value = activeEditor.getText().trim().length
+  },
+  onBlur: () => {
+    touched.value.description = true
   },
 })
-
-watch(
-  () => errors.value.description,
-  () => {
-    if (editor.value && !editor.value.isDestroyed) {
-      editor.value.setOptions({
-        editorProps: {
-          attributes: () => getEditorAttributes(),
-        },
-      })
-    }
-  },
-)
 
 onMounted(() => {
   if (!formEconomicSector.value && companyProfile.value?.economic_sector) {
@@ -117,87 +111,96 @@ onMounted(() => {
   }
 })
 
-onBeforeUnmount(() => {
-  editor.value?.destroy()
-})
-
-// Skills tag input helpers
-function addSkill(raw: string) {
-  const trimmed = raw.trim().replace(/,/g, '')
-  if (!trimmed) return
-
-  const exists = formSkills.value.some(s => s.toLowerCase() === trimmed.toLowerCase())
-  if (!exists) {
-    formSkills.value.push(trimmed)
+function addTags(field: TagField) {
+  const tags = field.tags.value
+  for (const part of tagInputs.value[field.key].split(',')) {
+    const tag = part.trim()
+    if (tag && !tags.some(value => value.toLowerCase() === tag.toLowerCase())) {
+      tags.push(tag)
+    }
   }
-  skillInput.value = ''
+  tagInputs.value[field.key] = ''
 }
 
-function removeSkill(index: number) {
-  formSkills.value.splice(index, 1)
-}
-
-function handleSkillKeydown(e: KeyboardEvent) {
-  if (e.key === 'Enter' || e.key === ',') {
-    e.preventDefault()
-    addSkill(skillInput.value)
-  } else if (e.key === 'Backspace' && !skillInput.value && formSkills.value.length > 0) {
-    formSkills.value.pop()
+function handleTagKeydown(event: KeyboardEvent, field: TagField) {
+  if (!event.isComposing && (event.key === 'Enter' || event.key === ',')) {
+    event.preventDefault()
+    addTags(field)
   }
 }
 
-// Client-side form validation (Strict parity for both DRAFT and OPEN)
-function validateForm(): boolean {
-  errors.value = {}
+const validation = computed<Partial<Record<Field, string>>>(() => {
+  const issues: Partial<Record<Field, string>> = {}
 
   const title = formTitle.value.trim()
-  if (!title) {
-    errors.value.title = 'El título del reto es obligatorio.'
+  if (title.length < 10) {
+    issues.title = 'Escribe un título de al menos 10 caracteres.'
   } else if (title.length > 255) {
-    errors.value.title = 'El título no puede superar los 255 caracteres.'
+    issues.title = 'El título no puede superar los 255 caracteres.'
   }
 
   const businessProcess = formBusinessProcess.value.trim()
-  if (!businessProcess) {
-    errors.value.business_process = 'El proceso de negocio es obligatorio.'
+  if (businessProcess.length < 5) {
+    issues.business_process = 'Escribe un proceso de al menos 5 caracteres.'
   } else if (businessProcess.length > 255) {
-    errors.value.business_process = 'El proceso de negocio no puede superar los 255 caracteres.'
+    issues.business_process = 'El proceso de negocio no puede superar los 255 caracteres.'
   }
 
-  if (!hasSemanticContent(formDescription.value)) {
-    errors.value.description = 'La descripción de la problemática es obligatoria.'
+  if (descriptionLength.value < 30) {
+    issues.description = 'Escribe una descripción de al menos 30 caracteres.'
   }
 
   const economicSector = formEconomicSector.value.trim()
   if (!economicSector) {
-    errors.value.economic_sector = 'El sector económico es obligatorio.'
+    issues.economic_sector = 'El sector económico es obligatorio.'
   } else if (economicSector.length > 100) {
-    errors.value.economic_sector = 'El sector económico no puede superar los 100 caracteres.'
+    issues.economic_sector = 'El sector económico no puede superar los 100 caracteres.'
   }
 
   if (!['REMOTE', 'HYBRID', 'ON_SITE'].includes(formModality.value)) {
-    errors.value.modality = 'Selecciona una modalidad válida.'
+    issues.modality = 'Selecciona una modalidad válida.'
   }
 
   if (!['BEGINNER', 'INTERMEDIATE', 'ADVANCED'].includes(formDifficulty.value)) {
-    errors.value.difficulty_level = 'Selecciona un nivel de dificultad válido.'
+    issues.difficulty_level = 'Selecciona un nivel de dificultad válido.'
   }
 
   const sem = Number(formMinSemester.value)
   if (!Number.isInteger(sem) || sem < 6 || sem > 10) {
-    errors.value.min_semester = 'El semestre mínimo debe ser un número entero entre 6 y 10.'
+    issues.min_semester = 'El semestre mínimo debe ser un número entero entre 6 y 10.'
   }
 
-  return Object.keys(errors.value).length === 0
-}
+  return issues
+})
+
+const canPublish = computed(() => Object.keys(validation.value).length === 0)
+const errors = computed(() => {
+  if (submitted.value) return validation.value
+  const visible: Partial<Record<Field, string>> = {}
+  for (const field of Object.keys(touched.value) as Field[]) {
+    visible[field] = validation.value[field]
+  }
+  return visible
+})
+
+const editingDisabled = computed(() => props.locked || !!props.busyAction)
+const showPublishHelp = ref(false)
+const submittingLocally = ref(false)
+
+watch(
+  [editor, editingDisabled, () => errors.value.description],
+  ([activeEditor, disabled]) => {
+    if (!activeEditor || activeEditor.isDestroyed) return
+    activeEditor.setEditable(!disabled, false)
+    activeEditor.setOptions({ editorProps: { attributes: getEditorAttributes } })
+  },
+)
 
 function handleSubmit(status: InitialChallengeStatus) {
-  if (skillInput.value.trim()) {
-    addSkill(skillInput.value)
-  }
-
-  const isValid = validateForm()
-  if (!isValid) return
+  if (editingDisabled.value || submittingLocally.value) return
+  submitted.value = true
+  if (!canPublish.value) return
+  tagFields.forEach(addTags)
 
   const payload: ChallengeCreatePayload = {
     title: formTitle.value.trim(),
@@ -207,24 +210,27 @@ function handleSubmit(status: InitialChallengeStatus) {
     modality: formModality.value,
     difficulty_level: formDifficulty.value,
     min_semester: Number(formMinSemester.value),
-    required_skills: formSkills.value,
-    knowledge_areas: [],
+    required_skills: [...formSkills.value],
+    knowledge_areas: [...formAreas.value],
     status,
   }
 
+  submittingLocally.value = true
   emit('submit', payload)
+  void nextTick(() => { submittingLocally.value = false })
 }
 </script>
 
 <template>
-  <form class="space-y-8" @submit.prevent>
+  <form class="grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)] lg:items-start" :aria-busy="!!busyAction" @submit.prevent>
     <!-- BLOQUE 1: INFORMACIÓN CENTRAL DEL RETO -->
     <section
+      :inert="editingDisabled"
       class="bg-surface border-2 border-neutral-900 dark:border-neutral-700 rounded-3xl p-6 sm:p-8 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] dark:shadow-[4px_4px_0px_0px_rgba(255,255,255,0.12)] space-y-6"
     >
       <div class="border-b-2 border-border-subtle pb-4">
         <h2 class="text-xl font-black text-text-main tracking-tight uppercase">
-          1. Información Central del Reto
+          Información del reto
         </h2>
         <p class="text-xs sm:text-sm text-text-muted mt-1 font-medium">
           Define el título principal, el área operativa y el detalle técnico de la problemática.
@@ -246,15 +252,17 @@ function handleSubmit(status: InitialChallengeStatus) {
           v-model="formTitle"
           type="text"
           maxlength="255"
+          aria-required="true"
           :aria-invalid="errors.title ? 'true' : 'false'"
           :aria-describedby="errors.title ? 'challenge-title-error' : undefined"
           placeholder="p. ej., Sistema de Telemetría y Gestión de Inventarios Multi-Bodega"
           :class="[
             errors.title
-              ? 'border-institutional-500 ring-2 ring-institutional-500/20'
+              ? 'border-red-500 ring-2 ring-institutional-500/20'
               : 'border-neutral-900 dark:border-neutral-700 focus:border-institutional-500 focus:ring-2 focus:ring-institutional-500/20',
             'w-full px-4 py-3 rounded-2xl bg-canvas border-2 text-text-main font-bold text-sm sm:text-base outline-none transition-all placeholder:text-text-muted/60',
           ]"
+          @blur="touched.title = true"
         >
         <p
           v-if="errors.title"
@@ -281,15 +289,17 @@ function handleSubmit(status: InitialChallengeStatus) {
           v-model="formBusinessProcess"
           type="text"
           maxlength="255"
+          aria-required="true"
           :aria-invalid="errors.business_process ? 'true' : 'false'"
           :aria-describedby="errors.business_process ? 'challenge-process-error' : undefined"
           placeholder="p. ej., Logística, Cadena de Suministro, Facturación Electrónica"
           :class="[
             errors.business_process
-              ? 'border-institutional-500 ring-2 ring-institutional-500/20'
+              ? 'border-red-500 ring-2 ring-institutional-500/20'
               : 'border-neutral-900 dark:border-neutral-700 focus:border-institutional-500 focus:ring-2 focus:ring-institutional-500/20',
             'w-full px-4 py-3 rounded-2xl bg-canvas border-2 text-text-main font-bold text-sm outline-none transition-all placeholder:text-text-muted/60',
           ]"
+          @blur="touched.business_process = true"
         >
         <p
           v-if="errors.business_process"
@@ -315,9 +325,9 @@ function handleSubmit(status: InitialChallengeStatus) {
           <div
             :class="[
               errors.description
-                ? 'border-institutional-500 ring-2 ring-institutional-500/20'
+                ? 'border-red-500 ring-2 ring-institutional-500/20'
                 : 'border-neutral-900 dark:border-neutral-700',
-              'border-2 rounded-2xl bg-canvas overflow-hidden shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] dark:shadow-[2px_2px_0px_0px_rgba(255,255,255,0.06)]',
+              'border-2 rounded-2xl bg-canvas overflow-hidden focus-within:ring-2 focus-within:ring-institutional-500 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] dark:shadow-[2px_2px_0px_0px_rgba(255,255,255,0.06)]',
             ]"
           >
             <!-- Toolbar Tiptap -->
@@ -480,6 +490,13 @@ function handleSubmit(status: InitialChallengeStatus) {
         </ClientOnly>
 
         <p
+          id="challenge-description-count"
+          class="text-xs font-bold"
+          :class="descriptionLength >= 30 ? 'text-emerald-700 dark:text-emerald-400' : 'text-text-muted'"
+        >
+          {{ descriptionLength }} caracteres · mínimo 30
+        </p>
+        <p
           v-if="errors.description"
           id="challenge-description-error"
           role="alert"
@@ -490,6 +507,7 @@ function handleSubmit(status: InitialChallengeStatus) {
       </div>
     </section>
 
+    <div class="min-w-0 space-y-6" :inert="editingDisabled">
     <!-- BLOQUE 2: CONTEXTO EMPRESARIAL -->
     <section
       class="bg-surface border-2 border-neutral-900 dark:border-neutral-700 rounded-3xl p-6 sm:p-8 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] dark:shadow-[4px_4px_0px_0px_rgba(255,255,255,0.12)] space-y-6"
@@ -497,7 +515,7 @@ function handleSubmit(status: InitialChallengeStatus) {
       <div class="border-b-2 border-border-subtle pb-4 flex items-center justify-between">
         <div>
           <h2 class="text-xl font-black text-text-main tracking-tight uppercase">
-            2. Contexto Empresarial
+            Contexto empresarial
           </h2>
           <p class="text-xs sm:text-sm text-text-muted mt-1 font-medium">
             Clasificación sectorial para la postulación y búsqueda de estudiantes afines.
@@ -523,15 +541,17 @@ function handleSubmit(status: InitialChallengeStatus) {
           v-model="formEconomicSector"
           type="text"
           maxlength="100"
+          aria-required="true"
           :aria-invalid="errors.economic_sector ? 'true' : 'false'"
           :aria-describedby="errors.economic_sector ? 'challenge-sector-error' : undefined"
           placeholder="p. ej., Agroindustria, Software & Cloud, Comercio Electrónico, Salud"
           :class="[
             errors.economic_sector
-              ? 'border-institutional-500 ring-2 ring-institutional-500/20'
+              ? 'border-red-500 ring-2 ring-institutional-500/20'
               : 'border-neutral-900 dark:border-neutral-700 focus:border-institutional-500 focus:ring-2 focus:ring-institutional-500/20',
             'w-full px-4 py-3 rounded-2xl bg-canvas border-2 text-text-main font-bold text-sm outline-none transition-all placeholder:text-text-muted/60',
           ]"
+          @blur="touched.economic_sector = true"
         >
         <p
           v-if="errors.economic_sector"
@@ -551,7 +571,7 @@ function handleSubmit(status: InitialChallengeStatus) {
       <div class="border-b-2 border-border-subtle pb-4 flex items-center justify-between">
         <div>
           <h2 class="text-xl font-black text-text-main tracking-tight uppercase">
-            3. Condiciones y Nivel Académico
+            Requisitos académicos
           </h2>
           <p class="text-xs sm:text-sm text-text-muted mt-1 font-medium">
             Establece los requisitos mínimos de vinculación con los estudiantes de la UFPS.
@@ -562,7 +582,7 @@ function handleSubmit(status: InitialChallengeStatus) {
         </span>
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div class="grid grid-cols-1 gap-6">
         <!-- Modalidad de Ejecución -->
         <div class="space-y-2.5">
           <label class="text-xs font-black uppercase tracking-wider text-text-main">
@@ -663,7 +683,7 @@ function handleSubmit(status: InitialChallengeStatus) {
       <div class="border-b-2 border-border-subtle pb-4 flex items-center justify-between">
         <div>
           <h2 class="text-xl font-black text-text-main tracking-tight uppercase">
-            4. Competencias y Habilidades Técnicas
+            Habilidades y conocimiento
           </h2>
           <p class="text-xs sm:text-sm text-text-muted mt-1 font-medium">
             Agrega las herramientas, lenguajes o tecnologías recomendadas para este reto.
@@ -674,76 +694,106 @@ function handleSubmit(status: InitialChallengeStatus) {
         </span>
       </div>
 
-      <!-- Skills Tag Input -->
-      <div class="space-y-3">
-        <label for="skill-tag-input" class="text-xs font-black uppercase tracking-wider text-text-main">
-          Habilidades Requeridas
+      <div v-for="field in tagFields" :key="field.key" class="space-y-3">
+        <label :for="`challenge-tags-${field.key}`" class="text-xs font-black uppercase tracking-wider text-text-main">
+          {{ field.label }}
         </label>
         <div class="flex items-center gap-2">
           <input
-            id="skill-tag-input"
-            v-model="skillInput"
+            :id="`challenge-tags-${field.key}`"
+            v-model="tagInputs[field.key]"
             type="text"
-            placeholder="Escribe una tecnología (p. ej., Python, Docker, Vue.js) y presiona Enter..."
-            class="flex-1 px-4 py-3 rounded-2xl bg-canvas border-2 border-neutral-900 dark:border-neutral-700 text-text-main font-bold text-sm outline-none focus:border-institutional-500 focus:ring-2 focus:ring-institutional-500/20 transition-all placeholder:text-text-muted/60"
-            @keydown="handleSkillKeydown"
+            :aria-describedby="`challenge-tags-${field.key}-help`"
+            class="min-w-0 flex-1 rounded-2xl border-2 border-neutral-900 bg-canvas px-3 py-3 text-sm font-bold text-text-main outline-none focus:ring-2 focus:ring-institutional-500 dark:border-neutral-700"
+            @keydown="handleTagKeydown($event, field)"
           >
           <button
             type="button"
             class="min-h-[44px] px-5 rounded-2xl bg-surface hover:bg-canvas border-2 border-neutral-900 dark:border-neutral-700 text-text-main font-black text-xs uppercase tracking-wider shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] dark:shadow-[2px_2px_0px_0px_rgba(255,255,255,0.06)] active:translate-x-[1px] active:translate-y-[1px] transition-all"
-            @click="addSkill(skillInput)"
+            :aria-label="`Agregar ${field.removeLabel}`"
+            @click="addTags(field)"
           >
-            + Agregar
+            Agregar
           </button>
         </div>
 
-        <!-- Chips de Habilidades Agregadas -->
-        <div v-if="formSkills.length > 0" class="flex flex-wrap gap-2 pt-2">
-          <span
-            v-for="(skill, idx) in formSkills"
-            :key="skill"
-            class="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-black bg-pastel-mint/35 dark:bg-pastel-mint/15 text-text-main border-2 border-neutral-900/30 dark:border-neutral-600 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] dark:shadow-[2px_2px_0px_0px_rgba(255,255,255,0.06)]"
+        <p :id="`challenge-tags-${field.key}-help`" class="text-xs text-text-muted">
+          Separa las etiquetas con Enter o coma.
+        </p>
+        <ul v-if="field.tags.value.length" class="flex flex-wrap gap-2">
+          <li
+            v-for="(tag, index) in field.tags.value"
+            :key="tag"
+            class="inline-flex max-w-full items-center gap-1 rounded-xl border border-border-subtle bg-pastel-mint/35 px-2 text-xs font-bold dark:bg-pastel-mint/15"
           >
-            <span>{{ skill }}</span>
+            <span class="min-w-0 break-all">{{ tag }}</span>
             <button
               type="button"
-              class="w-4 h-4 rounded-full flex items-center justify-center hover:bg-neutral-900 hover:text-white dark:hover:bg-neutral-100 dark:hover:text-neutral-900 text-text-muted transition-colors"
-              :aria-label="`Eliminar habilidad ${skill}`"
-              @click="removeSkill(idx)"
+              class="min-h-8 min-w-8 rounded-full text-text-muted hover:bg-canvas focus-visible:ring-2 focus-visible:ring-institutional-500"
+              :aria-label="`Eliminar ${field.removeLabel} ${tag}`"
+              @click="field.tags.value.splice(index, 1)"
             >
-              ✕
+              <span aria-hidden="true">×</span>
             </button>
-          </span>
-        </div>
-        <p v-else class="text-xs text-text-muted font-medium italic">
-          No has agregado habilidades todavía. Presiona Enter tras escribir una tecnología.
-        </p>
+          </li>
+        </ul>
       </div>
     </section>
+    </div>
 
     <!-- BARRA DE ACCIÓN INFERIOR (ACTION DOCK) -->
     <div
-      class="bg-surface border-2 border-neutral-900 dark:border-neutral-700 rounded-3xl p-6 sm:p-7 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] dark:shadow-[4px_4px_0px_0px_rgba(255,255,255,0.12)] flex flex-col sm:flex-row items-center justify-end gap-3.5"
+      class="sticky bottom-0 z-10 flex flex-wrap items-center justify-end gap-2 rounded-2xl border-2 border-neutral-900 bg-surface p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] dark:border-neutral-700 lg:static lg:col-start-2"
     >
+      <p v-if="busyAction" role="status" class="flex w-full items-center gap-2 text-sm font-bold">
+        <span class="size-4 animate-spin rounded-full border-2 border-current border-r-transparent motion-reduce:animate-none" aria-hidden="true" />
+        {{ busyAction === 'DRAFT' ? 'Guardando el borrador…' : 'Guardando el borrador para publicar…' }}
+      </p>
       <!-- Botón Guardar Borrador (DRAFT) -->
       <button
         type="button"
-        :disabled="loading"
-        class="w-full sm:w-auto px-6 py-3 rounded-2xl bg-surface hover:bg-canvas border-2 border-neutral-900 dark:border-neutral-700 text-text-main font-black text-xs sm:text-sm uppercase tracking-wider shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] dark:shadow-[3px_3px_0px_0px_rgba(255,255,255,0.1)] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+        :disabled="editingDisabled"
+        class="min-h-11 flex-1 rounded-xl border-2 border-neutral-900 px-3 py-2 text-sm font-bold text-text-main focus-visible:ring-2 focus-visible:ring-institutional-500 disabled:opacity-50 dark:border-neutral-700"
         @click="handleSubmit('DRAFT')"
       >
-        <span>{{ loading ? 'Guardando...' : 'Guardar como Borrador' }}</span>
+        Guardar borrador
       </button>
 
       <!-- Botón Publicar Reto (OPEN) -->
-      <button
-        type="button"
-        :disabled="loading"
-        class="w-full sm:w-auto px-8 py-3 rounded-2xl bg-institutional-500 hover:bg-institutional-600 text-white font-black text-xs sm:text-sm uppercase tracking-wider border-2 border-neutral-900 shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none disabled:opacity-50 disabled:cursor-not-allowed transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-institutional-500"
-        @click="handleSubmit('OPEN')"
+      <div
+        class="group relative flex flex-1 rounded-xl"
       >
-        <span>{{ loading ? 'Procesando...' : 'Publicar Reto Oficial ➔' }}</span>
-      </button>
+        <button
+          v-if="canPublish || editingDisabled"
+          type="button"
+          :disabled="editingDisabled"
+          class="min-h-11 w-full rounded-xl bg-institutional-600 px-3 py-2 text-sm font-black text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-institutional-500 disabled:opacity-50"
+          @click="handleSubmit('OPEN')"
+        >
+          Publicar reto
+        </button>
+        <button
+          v-else
+          type="button"
+          aria-disabled="true"
+          aria-describedby="publish-help"
+          class="min-h-11 w-full rounded-xl bg-institutional-600 px-3 py-2 text-sm font-black text-white opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-institutional-500"
+          @click="showPublishHelp = !showPublishHelp"
+          @blur="showPublishHelp = false"
+          @keydown.esc="showPublishHelp = false"
+        >
+          Publicar reto
+        </button>
+        <p
+          v-if="!canPublish && !editingDisabled"
+          id="publish-help"
+          role="tooltip"
+          class="pointer-events-none absolute right-0 bottom-full mb-2 w-max max-w-56 rounded-lg border border-border-subtle bg-surface p-2 text-xs font-medium text-text-main"
+          :class="showPublishHelp ? 'block' : 'sr-only group-hover:not-sr-only group-hover:absolute group-focus-within:not-sr-only group-focus-within:absolute'"
+        >
+          Completa los campos obligatorios para publicar el reto.
+        </p>
+      </div>
     </div>
   </form>
 </template>

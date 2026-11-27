@@ -5,7 +5,7 @@ import ManagePage from '~/pages/challenges/manage.vue'
 import type { CompanyChallenge } from '~/components/challenges/CompanyChallengeTable.vue'
 
 const fetchCompanyChallenges = vi.fn()
-const updateChallenge = vi.fn()
+const publishChallenge = vi.fn()
 const routerPush = vi.fn()
 const routerReplace = vi.fn()
 const addToast = vi.fn()
@@ -19,7 +19,7 @@ vi.mock('~/composables/useChallenges', () => ({
     loading,
     error,
     fetchCompanyChallenges,
-    updateChallenge,
+    publishChallenge,
   }),
 }))
 
@@ -158,7 +158,7 @@ describe('Company challenge management page', () => {
       limit: 100,
       pages: 1,
     })
-    updateChallenge.mockReset().mockImplementation(async (id: string) => ({
+    publishChallenge.mockReset().mockImplementation(async (id: string) => ({
       ...challenges.find(challenge => challenge.id === id),
       status: 'OPEN',
     }))
@@ -210,7 +210,7 @@ describe('Company challenge management page', () => {
     await wrapper.get('[data-testid="publish"]').trigger('click')
     await flushPromises()
 
-    expect(updateChallenge).toHaveBeenCalledWith('draft-1', { status: 'OPEN' })
+    expect(publishChallenge).toHaveBeenCalledWith('draft-1')
     expect(addToast).toHaveBeenCalledWith(expect.objectContaining({
       title: 'Reto publicado',
       color: 'success',

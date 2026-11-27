@@ -67,6 +67,16 @@ export interface Challenge {
 }
 
 /**
+ * Discovery card returned by the public catalog listing.
+ */
+export interface ChallengeCatalogItem extends Pick<Challenge,
+  'id' | 'company_id' | 'title' | 'difficulty_level' | 'modality' | 'min_semester' |
+  'economic_sector' | 'required_skills' | 'knowledge_areas' | 'created_at'> {
+  description_snippet: string
+  company_name?: string | null
+}
+
+/**
  * Privacy-safe challenge detail returned by the public catalog endpoint.
  * Corporate contact channels are intentionally absent from this projection.
  */
@@ -167,7 +177,25 @@ export interface AttachmentDownloadResponse {
  * Metadata provided when catalog filter yields 0 matches
  */
 export interface ChallengeEmptyStateMetadata {
-  query_params: Record<string, unknown>
-  suggested_reset: boolean
-  total_active_challenges: number
+  code?: string
+  message?: string
+  query_params?: {
+    q?: string
+    sector?: string
+    economic_sector?: string
+    modality?: Modality
+    difficulty?: DifficultyLevel
+    difficulty_level?: DifficultyLevel
+    skill?: string | string[]
+    skills?: string[]
+    knowledge_area?: string | string[]
+    knowledge_areas?: string[]
+    min_semester?: number
+  }
+  suggested_reset?: boolean
+  total_active_challenges?: number
+}
+
+export interface ChallengeCatalogResponse extends PaginatedResponse<ChallengeCatalogItem> {
+  empty_state?: ChallengeEmptyStateMetadata | null
 }
