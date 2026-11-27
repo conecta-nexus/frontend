@@ -1,14 +1,20 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
+import type { LocationQuery, NavigationGuard } from 'vue-router'
 import IndexPage from '~/pages/challenges/index.vue'
+import ChallengeCard from '~/components/challenges/ChallengeCard.vue'
 import CatalogEmptyState from '~/components/challenges/CatalogEmptyState.vue'
 import CatalogFilterBar from '~/components/challenges/CatalogFilterBar.vue'
-import type { Challenge } from '~/types/challenge'
+import type { ChallengeCatalogItem } from '~/types/challenge'
 
 // Deterministic mock state for useChallenges
-const mockChallenges = ref<Challenge[]>([])
+const mockChallenges = ref<ChallengeCatalogItem[]>([])
 const mockPagination = ref<{ total: number; page: number; pages: number; limit: number } | null>(null)
+const mockCatalog = computed(() => mockPagination.value && {
+  ...mockPagination.value,
+  items: mockChallenges.value,
+})
 const mockLoading = ref(false)
 const mockError = ref<string | null>(null)
 const mockFetchCatalog = vi.fn().mockImplementation(async () => {
@@ -16,11 +22,11 @@ const mockFetchCatalog = vi.fn().mockImplementation(async () => {
 })
 
 // Route and Router mock state
-const mockRoute = reactive<{ query: Record<string, string> }>({
+const mockRoute = reactive<{ query: LocationQuery }>({
   query: {},
 })
 
-const mockRouterPush = vi.fn().mockImplementation(async (target: { query: Record<string, string> }) => {
+const mockRouterPush = vi.fn().mockImplementation(async (target: { query: LocationQuery }) => {
   mockRoute.query = target.query || {}
 })
 
@@ -44,25 +50,33 @@ vi.stubGlobal('useRoute', () => mockRoute)
 vi.stubGlobal('useRouter', () => ({
   push: mockRouterPush,
 }))
-vi.stubGlobal('useChallenges', () => ({
-  challenges: mockChallenges,
-  pagination: mockPagination,
-  loading: mockLoading,
-  error: mockError,
-  fetchCatalog: mockFetchCatalog,
-}))
-
+const mockBeforeRouteLeave = vi.fn<(guard: NavigationGuard) => void>()
+vi.stubGlobal('onBeforeRouteLeave', mockBeforeRouteLeave)
 vi.mock('~/composables/useChallenges', () => ({
   useChallenges: () => ({
-    challenges: mockChallenges,
-    pagination: mockPagination,
-    loading: mockLoading,
-    error: mockError,
+    catalog: mockCatalog,
+    catalogLoading: mockLoading,
+    catalogError: mockError,
     fetchCatalog: mockFetchCatalog,
   }),
 }))
 
-describe('Challenges Index Page - Empty State Integration', () => {
+const challenge: ChallengeCatalogItem = {
+  id: 'challenge-1',
+  company_id: 'comp-1',
+  company_name: 'Laboratorio Río Claro',
+  title: 'Sistema de Telemetría Agropecuaria',
+  description_snippet: 'Desarrollo de plataforma IoT para monitoreo de humedad.',
+  difficulty_level: 'INTERMEDIATE',
+  modality: 'REMOTE',
+  min_semester: 7,
+  economic_sector: 'Agroindustria',
+  required_skills: ['Vue', 'FastAPI', 'PostgreSQL', 'Python', 'MQTT'],
+  knowledge_areas: ['Ingeniería de Software'],
+  created_at: '2026-11-10T00:00:00Z',
+}
+
+describe('Challenges Index Page', () => {
   let wrapper: VueWrapper | null = null
 
   beforeEach(() => {
@@ -83,6 +97,7 @@ describe('Challenges Index Page - Empty State Integration', () => {
       wrapper.unmount()
       wrapper = null
     }
+    vi.useRealTimers()
   })
 
   it('renders CatalogEmptyState when challenges array is empty and request is successful', async () => {
@@ -99,15 +114,16 @@ describe('Challenges Index Page - Empty State Integration', () => {
       },
     })
 
+    await wrapper.vm.$nextTick()
     const emptyState = wrapper.findComponent(CatalogEmptyState)
     expect(emptyState.exists()).toBe(true)
     expect(emptyState.text()).toContain('No se encontraron desafíos')
   })
 
-  it('does NOT render CatalogEmptyState while catalog is loading', async () => {
+  it('renders six skeletons and hides stale cards during a new request', async () => {
     mockLoading.value = true
     mockError.value = null
-    mockChallenges.value = []
+    mockChallenges.value = [challenge]
 
     wrapper = mount(IndexPage, {
       global: {
@@ -118,9 +134,18 @@ describe('Challenges Index Page - Empty State Integration', () => {
       },
     })
 
+    await wrapper.vm.$nextTick()
     const emptyState = wrapper.findComponent(CatalogEmptyState)
     expect(emptyState.exists()).toBe(false)
-    expect(wrapper.find('.animate-pulse').exists()).toBe(true)
+    const skeletons = wrapper.findAll('[data-testid="catalog-skeleton"]')
+    expect(skeletons).toHaveLength(6)
+    expect(skeletons.every(skeleton => skeleton.attributes('aria-hidden') === 'true')).toBe(true)
+    expect(wrapper.findComponent(ChallengeCard).exists()).toBe(false)
+
+    mockLoading.value = false
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAll('[data-testid="catalog-skeleton"]')).toHaveLength(0)
+    expect(wrapper.findComponent(ChallengeCard).exists()).toBe(true)
   })
 
   it('does NOT render CatalogEmptyState when there is an API error', async () => {
@@ -137,6 +162,7 @@ describe('Challenges Index Page - Empty State Integration', () => {
       },
     })
 
+    await wrapper.vm.$nextTick()
     const emptyState = wrapper.findComponent(CatalogEmptyState)
     expect(emptyState.exists()).toBe(false)
     expect(wrapper.text()).toContain('Error al conectar con el servidor de retos')
@@ -146,24 +172,11 @@ describe('Challenges Index Page - Empty State Integration', () => {
     mockLoading.value = false
     mockError.value = null
     mockChallenges.value = [
-      {
-        id: 'challenge-1',
-        company_id: 'comp-1',
-        title: 'Sistema de Telemetría Agropecuaria',
-        description: 'Desarrollo de plataforma IoT para monitoreo de humedad.',
-        business_process: 'Operaciones',
-        status: 'OPEN',
-        difficulty_level: 'INTERMEDIATE',
-        modality: 'REMOTE',
-        min_semester: 7,
-        economic_sector: 'Agroindustria',
-        required_skills: ['Vue', 'FastAPI'],
-        knowledge_areas: ['Ingeniería de Software'],
-        created_at: '2026-11-10T00:00:00Z',
-        updated_at: '2026-11-10T00:00:00Z',
-      },
+      challenge,
+      { ...challenge, id: 'challenge-2', company_name: undefined, modality: 'HYBRID', difficulty_level: 'BEGINNER' },
+      { ...challenge, id: 'challenge-3', modality: 'ON_SITE', difficulty_level: 'ADVANCED' },
     ]
-    mockPagination.value = { total: 1, page: 1, pages: 1, limit: 10 }
+    mockPagination.value = { total: 3, page: 1, pages: 1, limit: 10 }
 
     wrapper = mount(IndexPage, {
       global: {
@@ -174,9 +187,85 @@ describe('Challenges Index Page - Empty State Integration', () => {
       },
     })
 
+    await wrapper.vm.$nextTick()
     const emptyState = wrapper.findComponent(CatalogEmptyState)
     expect(emptyState.exists()).toBe(false)
-    expect(wrapper.text()).toContain('Sistema de Telemetría Agropecuaria')
+    const [remote, hybrid, onSite] = wrapper.findAllComponents(ChallengeCard)
+    expect(remote!.get('h2').text()).toBe(challenge.title)
+    expect(remote!.text()).toContain(challenge.company_name)
+    expect(remote!.get('.line-clamp-3').text()).toBe(challenge.description_snippet)
+    expect(remote!.text()).toContain('Sem. 7+')
+    expect(remote!.get('ul').text()).toContain('Vue')
+    expect(remote!.get('ul').text()).toContain('+1')
+    expect(remote!.get('a').attributes('href')).toBe('/challenges/challenge-1')
+    expect(remote!.get('.bg-blue-50').text()).toBe('Remoto')
+    expect(remote!.get('.bg-amber-50').text()).toBe('Intermedio')
+    expect(hybrid!.get('.bg-purple-50').text()).toBe('Híbrido')
+    expect(hybrid!.get('.bg-green-50').text()).toBe('Básico')
+    expect(hybrid!.text()).toContain('Empresa sin nombre público')
+    expect(onSite!.get('.bg-orange-50').text()).toBe('Presencial')
+    expect(onSite!.get('.bg-red-50').text()).toBe('Avanzado')
+  })
+
+  it('paginates through the route, preserves filters, and disables navigation at each boundary', async () => {
+    mockRoute.query = { q: 'IoT', limit: '1' }
+    mockChallenges.value = [challenge]
+    mockPagination.value = { total: 2, page: 1, pages: 2, limit: 1 }
+
+    wrapper = mount(IndexPage, { global: { stubs: { CatalogFilterBar: CatalogFilterBarStub, NuxtLink: NuxtLinkStub } } })
+    await wrapper.vm.$nextTick()
+    const pagination = wrapper.get('nav[aria-label="Paginación del catálogo"]')
+    const [previous, next] = pagination.findAll('button')
+    expect(pagination.text()).toContain('Página 1 de 2')
+    expect(previous!.element.disabled).toBe(true)
+    expect(next!.element.disabled).toBe(false)
+
+    await next!.trigger('click')
+    expect(mockRouterPush).toHaveBeenLastCalledWith({ query: { q: 'IoT', limit: '1', page: '2' } })
+    expect(mockFetchCatalog).toHaveBeenCalledTimes(2)
+    expect(mockFetchCatalog).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'IoT', page: 2, limit: 1 }))
+
+    mockPagination.value = { total: 2, page: 2, pages: 2, limit: 1 }
+    await wrapper.vm.$nextTick()
+    expect(pagination.get('[aria-current="page"]').text()).toBe('2')
+    expect(next!.element.disabled).toBe(true)
+    expect(previous!.element.disabled).toBe(false)
+    await previous!.trigger('click')
+    expect(mockRouterPush).toHaveBeenLastCalledWith({ query: { q: 'IoT', limit: '1', page: '1' } })
+  })
+
+  it('uses pagination defaults and omits invalid filters from shared URLs', () => {
+    mockRoute.query = {
+      q: '  IoT  ',
+      page: '2tail',
+      limit: '101',
+      min_semester: '6.5',
+      modality: 'UNKNOWN',
+      difficulty: 'constructor',
+    }
+    wrapper = mount(IndexPage, { global: { stubs: { CatalogFilterBar: CatalogFilterBarStub } } })
+
+    expect(mockFetchCatalog).toHaveBeenCalledOnce()
+    expect(mockFetchCatalog).toHaveBeenCalledWith(expect.objectContaining({
+      q: 'IoT',
+      page: 1,
+      limit: 10,
+      min_semester: undefined,
+      modality: undefined,
+      difficulty: undefined,
+    }))
+  })
+
+  it('offers the last valid page when results exist outside the requested page', async () => {
+    mockRoute.query = { q: 'IoT', page: '999' }
+    mockPagination.value = { total: 11, page: 999, pages: 2, limit: 10 }
+    wrapper = mount(IndexPage, { global: { stubs: { CatalogFilterBar: CatalogFilterBarStub } } })
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.findComponent(CatalogEmptyState).exists()).toBe(false)
+    expect(wrapper.text()).toContain('La página solicitada no está disponible.')
+    await wrapper.get('button').trigger('click')
+    expect(mockRouterPush).toHaveBeenLastCalledWith({ query: { q: 'IoT', page: '2' } })
   })
 
   it('passes derived active filters to CatalogEmptyState and enables reset action', async () => {
@@ -197,6 +286,7 @@ describe('Challenges Index Page - Empty State Integration', () => {
       },
     })
 
+    await wrapper.vm.$nextTick()
     const emptyState = wrapper.findComponent(CatalogEmptyState)
     expect(emptyState.exists()).toBe(true)
     expect(emptyState.props('showReset')).toBe(true)
@@ -232,6 +322,7 @@ describe('Challenges Index Page - Empty State Integration', () => {
     // Initial mount calls fetchCatalog once
     expect(mockFetchCatalog).toHaveBeenCalledTimes(1)
 
+    await wrapper.vm.$nextTick()
     const emptyState = wrapper.findComponent(CatalogEmptyState)
     expect(emptyState.exists()).toBe(true)
 
@@ -320,5 +411,139 @@ describe('Challenges Index Page - Empty State Integration', () => {
 
     expect(mockRouterPush).not.toHaveBeenCalled()
     expect(mockFetchCatalog).toHaveBeenCalledTimes(1)
+  })
+
+  const skillButtons = '[aria-label^="Quitar habilidad "]'
+  const searchInput = 'input[placeholder^="Buscar desafíos"]'
+
+  function mountCatalog() {
+    wrapper = mount(IndexPage, { global: { stubs: { NuxtLink: NuxtLinkStub } } })
+    return wrapper
+  }
+
+  it('restores unique skills from comma-separated and repeated URL parameters', async () => {
+    mockRoute.query = { skill: ['Vue, PostgreSQL', 'Vue', null, ' , '], skills: ['PostgreSQL', 'Python'] }
+    const page = mountCatalog()
+    await page.vm.$nextTick()
+
+    expect(page.findAll(skillButtons).map(button => button.attributes('aria-label'))).toEqual([
+      'Quitar habilidad Vue', 'Quitar habilidad PostgreSQL', 'Quitar habilidad Python',
+    ])
+    expect(mockFetchCatalog).toHaveBeenCalledWith(expect.objectContaining({ skill: 'Vue,PostgreSQL,Python' }))
+    expect(mockFetchCatalog).toHaveBeenCalledOnce()
+  })
+
+  it('removes one skill and preserves other filters and the page size while resetting the page', async () => {
+    mockRoute.query = {
+      q: 'IoT', sector: 'Tecnología', skill: 'Vue,PostgreSQL', modality: 'REMOTE',
+      difficulty_level: 'BEGINNER', knowledge_areas: ['Software', 'Redes'],
+      min_semester: '7', limit: '1', page: '3',
+    }
+    const page = mountCatalog()
+    await page.vm.$nextTick()
+    await page.get('[aria-label="Quitar habilidad Vue"]').trigger('click')
+    await page.vm.$nextTick()
+
+    expect(page.findAll(skillButtons).map(button => button.attributes('aria-label'))).toEqual(['Quitar habilidad PostgreSQL'])
+    expect(mockRouterPush).toHaveBeenCalledOnce()
+    expect(mockRouterPush).toHaveBeenCalledWith({
+      query: { q: 'IoT', sector: 'Tecnología', skill: 'PostgreSQL', modality: 'REMOTE', difficulty: 'BEGINNER', knowledge_area: 'Software,Redes', min_semester: '7', limit: '1' },
+    })
+    expect(mockFetchCatalog).toHaveBeenCalledTimes(2)
+    expect(mockFetchCatalog).toHaveBeenLastCalledWith(expect.objectContaining({ skill: 'PostgreSQL', page: 1, limit: 1, min_semester: 7 }))
+  })
+
+  it('resynchronizes filters on history navigation and skips equivalent requests', async () => {
+    const first = { q: 'Cloud', skill: 'Vue,PostgreSQL' }
+    const second = { q: 'IoT', skill: ['Python', 'FastAPI'], page: '2', page_size: '2' }
+    mockRoute.query = first
+    const page = mountCatalog()
+    await page.vm.$nextTick()
+
+    mockRoute.query = second
+    await page.vm.$nextTick()
+    expect(page.get<HTMLInputElement>(searchInput).element.value).toBe('IoT')
+    expect(page.findAll(skillButtons).map(button => button.attributes('aria-label'))).toEqual(['Quitar habilidad Python', 'Quitar habilidad FastAPI'])
+    mockRoute.query = first
+    await page.vm.$nextTick()
+    expect(page.get<HTMLInputElement>(searchInput).element.value).toBe('Cloud')
+    expect(page.get('[aria-label="Quitar habilidad Vue"]').exists()).toBe(true)
+    mockRoute.query = { ...first, skill: ['PostgreSQL', 'Vue', 'Vue'] }
+    await page.vm.$nextTick()
+    expect(mockFetchCatalog).toHaveBeenCalledTimes(3)
+    expect(mockRouterPush).not.toHaveBeenCalled()
+  })
+
+  it('cancels a pending search on reset and retains the page-size preference', async () => {
+    vi.useFakeTimers()
+    mockRoute.query = { q: 'Cloud', skill: 'Vue', page: '3', page_size: '2' }
+    const page = mountCatalog()
+    await page.vm.$nextTick()
+    await page.get(searchInput).setValue('Stale search')
+    const reset = page.findAll('button').find(button => button.text() === 'Restablecer')!
+    await reset.trigger('click')
+    await vi.advanceTimersByTimeAsync(400)
+
+    expect(mockRouterPush).toHaveBeenCalledExactlyOnceWith({ query: { page_size: '2' } })
+    expect(mockFetchCatalog).toHaveBeenCalledTimes(2)
+    expect(mockFetchCatalog).toHaveBeenLastCalledWith(expect.objectContaining({ q: undefined, page: 1, limit: 2 }))
+  })
+
+  it('cancels a pending search on unmount', async () => {
+    vi.useFakeTimers()
+    const page = mountCatalog()
+    await page.get(searchInput).setValue('Stale search')
+    page.unmount()
+    wrapper = null
+    await vi.advanceTimersByTimeAsync(400)
+
+    expect(mockRouterPush).not.toHaveBeenCalled()
+    expect(mockFetchCatalog).toHaveBeenCalledOnce()
+  })
+
+  it('cancels a pending search when a route navigation starts', async () => {
+    vi.useFakeTimers()
+    const page = mountCatalog()
+    await page.get(searchInput).setValue('Stale search')
+    const leave = mockBeforeRouteLeave.mock.calls[0]![0]
+    const current = Object.assign({} as Parameters<NavigationGuard>[1], { path: '/challenges' })
+    const nextRoute = { ...current, path: '/' }
+    const next = vi.fn()
+    await leave(nextRoute, current, next)
+    await vi.advanceTimersByTimeAsync(400)
+
+    expect(next).toHaveBeenCalledOnce()
+    expect(mockRouterPush).not.toHaveBeenCalled()
+    expect(mockFetchCatalog).toHaveBeenCalledOnce()
+  })
+
+  it('applies a pending search with an immediate filter change in a single request', async () => {
+    vi.useFakeTimers()
+    mockRoute.query = { q: 'Cloud', skill: 'Vue', max_semester: '8', limit: '2', page: '2' }
+    const page = mountCatalog()
+    await page.vm.$nextTick()
+    await page.get(searchInput).setValue('IoT')
+    await page.findAll('select')[1]!.setValue('REMOTE')
+    await vi.advanceTimersByTimeAsync(400)
+
+    expect(mockRouterPush).toHaveBeenCalledExactlyOnceWith({
+      query: { q: 'IoT', skill: 'Vue', modality: 'REMOTE', max_semester: '8', limit: '2' },
+    })
+    expect(mockFetchCatalog).toHaveBeenCalledTimes(2)
+    expect(mockFetchCatalog).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'IoT', modality: 'REMOTE', min_semester: 8, page: 1, limit: 2 }))
+  })
+
+  it('cancels a pending search when clearing the search field', async () => {
+    vi.useFakeTimers()
+    mockRoute.query = { q: 'Cloud', skill: 'Vue', page: '2' }
+    const page = mountCatalog()
+    await page.vm.$nextTick()
+    await page.get(searchInput).setValue('Stale search')
+    await page.get('[title="Limpiar búsqueda"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(400)
+
+    expect(mockRouterPush).toHaveBeenCalledExactlyOnceWith({ query: { skill: 'Vue' } })
+    expect(mockFetchCatalog).toHaveBeenCalledTimes(2)
+    expect(mockFetchCatalog).toHaveBeenLastCalledWith(expect.objectContaining({ q: undefined, skill: 'Vue', page: 1 }))
   })
 })

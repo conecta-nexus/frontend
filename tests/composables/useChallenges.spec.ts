@@ -4,7 +4,7 @@ import { useChallenges } from '~/composables/useChallenges'
 
 const apiFetch = vi.fn()
 
-describe('useChallenges public catalog detail', () => {
+describe('useChallenges public catalog', () => {
   beforeEach(() => {
     apiFetch.mockReset()
     vi.stubGlobal('useApi', () => ({ apiFetch }))
@@ -55,5 +55,29 @@ describe('useChallenges public catalog detail', () => {
       download_url: 'https://storage.example.com/signed/guide',
     }))
     expect(currentChallenge.value).toEqual(result)
+  })
+
+  it('keeps the latest catalog response when an older page request finishes later', async () => {
+    const firstPage = { items: [], page: 1, pages: 2, total: 2, limit: 1 }
+    const secondPage = { ...firstPage, page: 2 }
+    let resolveFirstPage!: (response: typeof firstPage) => void
+    apiFetch.mockReturnValueOnce(new Promise((resolve) => {
+      resolveFirstPage = resolve
+    })).mockResolvedValueOnce(secondPage)
+
+    const { fetchCatalog, catalog, catalogLoading, challenges } = useChallenges()
+    const request = fetchCatalog({ page: 1, limit: 1 })
+    expect(catalogLoading.value).toBe(true)
+    await fetchCatalog({ page: 2, limit: 1 })
+    resolveFirstPage(firstPage)
+    await request
+
+    expect(apiFetch).toHaveBeenLastCalledWith('/challenges/catalog', {
+      method: 'GET',
+      query: { page: 2, limit: 1 },
+    })
+    expect(catalog.value).toEqual(secondPage)
+    expect(catalogLoading.value).toBe(false)
+    expect(challenges.value).toEqual([])
   })
 })

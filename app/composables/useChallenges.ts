@@ -4,6 +4,7 @@ import type {
   Challenge,
   ChallengeAttachment,
   ChallengeCatalogFilter,
+  ChallengeCatalogItem,
   ChallengeClosePayload,
   ChallengeCreatePayload,
   ChallengeUpdatePayload,
@@ -29,6 +30,10 @@ export function useChallenges() {
   const pagination = useState<PaginatedResponse<Challenge> | null>('challenges_pagination', () => null)
   const loading = useState<boolean>('challenges_loading', () => false)
   const error = useState<string | null>('challenges_error', () => null)
+  const catalog = useState<PaginatedResponse<ChallengeCatalogItem> | null>('challenges_catalog', () => null)
+  const catalogLoading = useState('challenges_catalog_loading', () => false)
+  const catalogError = useState<string | null>('challenges_catalog_error', () => null)
+  const catalogRequest = useState('challenges_catalog_request', () => 0)
 
   // Computed state helpers
   const hasChallenges = computed(() => challenges.value.length > 0)
@@ -215,9 +220,10 @@ export function useChallenges() {
    */
   async function fetchCatalog(
     filters: ChallengeCatalogFilter = {},
-  ): Promise<PaginatedResponse<Challenge>> {
-    loading.value = true
-    error.value = null
+  ): Promise<PaginatedResponse<ChallengeCatalogItem>> {
+    const request = ++catalogRequest.value
+    catalogLoading.value = true
+    catalogError.value = null
     try {
       const query: Record<string, string | number> = {}
       if (filters.q) query.q = filters.q
@@ -234,19 +240,26 @@ export function useChallenges() {
       if (filters.page) query.page = filters.page
       if (filters.limit || filters.page_size) query.limit = filters.limit || filters.page_size || 10
 
-      const response = await apiFetch<PaginatedResponse<Challenge>>('/challenges/catalog', {
+      const response = await apiFetch<PaginatedResponse<ChallengeCatalogItem>>('/challenges/catalog', {
         method: 'GET',
         query,
       })
-      challenges.value = response.items
-      pagination.value = response
+      if (request === catalogRequest.value) {
+        catalog.value = response
+      }
       return response
     } catch (err: unknown) {
-      const fetchError = err as { data?: { detail?: string }; message?: string }
-      error.value = fetchError?.data?.detail || fetchError?.message || 'Failed to fetch opportunity catalog'
+      if (request === catalogRequest.value) {
+        const fetchError = err as { data?: { detail?: unknown }; message?: string }
+        catalogError.value = typeof fetchError?.data?.detail === 'string'
+          ? fetchError.data.detail
+          : 'No se pudo cargar el catálogo de desafíos.'
+      }
       throw err
     } finally {
-      loading.value = false
+      if (request === catalogRequest.value) {
+        catalogLoading.value = false
+      }
     }
   }
 
@@ -359,6 +372,9 @@ export function useChallenges() {
     updateChallenge,
     closeChallenge,
     fetchCompanyChallenges,
+    catalog,
+    catalogLoading,
+    catalogError,
     fetchCatalog,
     uploadAttachment,
     getAttachmentDownloadUrl,
