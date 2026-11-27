@@ -50,7 +50,7 @@ const {
   loading,
   error,
   fetchCompanyChallenges,
-  updateChallenge,
+  publishChallenge: publishSavedDraft,
 } = useChallenges()
 
 const portfolio = ref<CompanyChallenge[]>([])
@@ -137,7 +137,7 @@ async function publishChallenge(challenge: CompanyChallenge) {
 
   publishingId.value = challenge.id
   try {
-    const updated = await updateChallenge(challenge.id, { status: 'OPEN' })
+    const updated = await publishSavedDraft(challenge.id)
     const index = portfolio.value.findIndex(item => item.id === challenge.id)
     if (index !== -1) {
       portfolio.value[index] = {
@@ -230,13 +230,18 @@ onMounted(() => {
           </p>
         </div>
 
-        <NuxtLink
-          to="/challenges/new"
-          class="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl border-2 border-neutral-900 bg-institutional-600 px-5 py-3 text-sm font-black text-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] transition-transform hover:-translate-y-0.5 dark:border-institutional-400 dark:shadow-none"
-        >
-          <span aria-hidden="true">＋</span>
-          Publicar nuevo reto
-        </NuxtLink>
+        <div class="flex flex-wrap items-center gap-3">
+          <NuxtLink to="/challenges" class="inline-flex min-h-12 items-center rounded-xl px-3 text-sm font-bold underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-institutional-500">
+            Explorar catálogo
+          </NuxtLink>
+          <NuxtLink
+            to="/challenges/new"
+            class="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl border-2 border-neutral-900 bg-institutional-600 px-5 py-3 text-sm font-black text-white shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] transition-transform hover:-translate-y-0.5 dark:border-institutional-400 dark:shadow-none"
+          >
+            <span aria-hidden="true">＋</span>
+            Publicar nuevo reto
+          </NuxtLink>
+        </div>
       </header>
 
       <section aria-labelledby="portfolio-summary-title">
