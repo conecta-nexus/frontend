@@ -15,7 +15,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <UApp>
+  <UApp :toaster="{ position: 'bottom-right' }">
     <NuxtLayout>
       <NuxtRouteAnnouncer />
       <NuxtPage />

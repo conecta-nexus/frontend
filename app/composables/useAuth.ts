@@ -22,10 +22,38 @@ interface JwtClaims {
   exp?: number
 }
 
+interface AuthRuntimeState {
+  refreshPromise: Promise<boolean> | null
+  refreshEpoch: number
+  refreshTokenSnapshot: string | null
+  initPromise: Promise<boolean> | null
+  initEpoch: number
+}
+
+// Keyed per NuxtApp instance so Promises are never stored in SSR hydration state
+// and never shared across concurrent requests or isolated app instances.
+const authRuntimeByContext = new WeakMap<object, AuthRuntimeState>()
+
+function getAuthRuntime(nuxtApp: object): AuthRuntimeState {
+  let runtime = authRuntimeByContext.get(nuxtApp)
+  if (!runtime) {
+    runtime = {
+      refreshPromise: null,
+      refreshEpoch: -1,
+      refreshTokenSnapshot: null,
+      initPromise: null,
+      initEpoch: -1,
+    }
+    authRuntimeByContext.set(nuxtApp, runtime)
+  }
+  return runtime
+}
+
 export function useAuth() {
+  const nuxtApp = useNuxtApp()
   const { apiFetch, baseUrl } = useApi()
 
-  // Primary authentication reactive states
+  // Primary authentication reactive states (SSR-isolated per Nuxt context via useState)
   const accessToken = useState<string | null>('auth_access_token', () => null)
   const refreshToken = useCookie<string | null>('auth_refresh_token', {
     maxAge: 60 * 60 * 24 * 7, // 7 days
@@ -38,6 +66,10 @@ export function useAuth() {
   const companyProfile = useState<CompanyProfile | null>('auth_company_profile', () => null)
   const consent = useState<DataConsent | null>('auth_consent', () => null)
   const isInitializing = useState<boolean>('auth_is_initializing', () => false)
+  const sessionGeneration = useState<number>('auth_session_generation', () => 0)
+  const explicitSessionEpoch = useState<number>('auth_explicit_session_epoch', () => 0)
+
+  const runtime = getAuthRuntime(nuxtApp)
 
   const isAuthenticated = computed(() => !!accessToken.value || !!refreshToken.value)
   const userRole = computed<UserRole | null>(() => user.value?.role || null)
@@ -46,6 +78,35 @@ export function useAuth() {
     if (userRole.value === 'COMPANY') return companyProfile.value
     return null
   })
+
+  function invalidatePendingRuntime() {
+    runtime.refreshPromise = null
+    runtime.refreshEpoch = -1
+    runtime.refreshTokenSnapshot = null
+    runtime.initPromise = null
+    runtime.initEpoch = -1
+  }
+
+  function advanceSessionGeneration(): number {
+    sessionGeneration.value += 1
+    invalidatePendingRuntime()
+    return sessionGeneration.value
+  }
+
+  function beginExplicitSessionTransition(): number {
+    explicitSessionEpoch.value += 1
+    return advanceSessionGeneration()
+  }
+
+  function resetSessionRefs() {
+    accessToken.value = null
+    refreshToken.value = null
+    user.value = null
+    studentProfile.value = null
+    companyProfile.value = null
+    consent.value = null
+    isInitializing.value = false
+  }
 
   /**
    * Parse JWT and update reactive user state
@@ -76,41 +137,81 @@ export function useAuth() {
    * Log in user with email and password
    */
   async function login(credentials: { email: string; password: string }): Promise<TokenResponse> {
+    const loginEpoch = beginExplicitSessionTransition()
+    resetSessionRefs()
+
     const data = await $fetch<TokenResponse>(`${baseUrl}/auth/login`, {
       method: 'POST',
       body: credentials,
     })
 
+    if (sessionGeneration.value !== loginEpoch) {
+      throw new Error('Authentication session superseded during login')
+    }
+
     accessToken.value = data.access_token
     refreshToken.value = data.refresh_token
     parseJwtUser(data.access_token)
 
-    // Load user consent & profile in the background
+    // Load user consent & profile in the background with session epoch guard
     await Promise.allSettled([fetchConsent(), fetchProfile()])
 
     return data
   }
 
   /**
-   * Rotate refresh token to obtain a fresh access token
+   * Rotate refresh token to obtain a fresh access token (single-flight & epoch-guarded per Nuxt context)
    */
   async function refreshTokens(): Promise<boolean> {
-    if (!refreshToken.value) return false
+    const currentRefreshToken = refreshToken.value
+    if (!currentRefreshToken) return false
 
-    try {
-      const data = await $fetch<TokenResponse>(`${baseUrl}/auth/refresh`, {
-        method: 'POST',
-        body: { refresh_token: refreshToken.value },
-      })
-
-      accessToken.value = data.access_token
-      refreshToken.value = data.refresh_token
-      parseJwtUser(data.access_token)
-      return true
-    } catch {
-      clearSession()
-      return false
+    const startEpoch = sessionGeneration.value
+    if (
+      runtime.refreshPromise &&
+      runtime.refreshEpoch === startEpoch &&
+      runtime.refreshTokenSnapshot === currentRefreshToken
+    ) {
+      return await runtime.refreshPromise
     }
+
+    let promise: Promise<boolean> | null = null
+    promise = (async () => {
+      try {
+        const data = await $fetch<TokenResponse>(`${baseUrl}/auth/refresh`, {
+          method: 'POST',
+          body: { refresh_token: currentRefreshToken },
+        })
+
+        // Ignore late response if logout or another login superseded this session
+        if (sessionGeneration.value !== startEpoch) {
+          return false
+        }
+
+        accessToken.value = data.access_token
+        refreshToken.value = data.refresh_token
+        parseJwtUser(data.access_token)
+        return true
+      } catch {
+        // Never wipe a newer session if a superseded refresh fails late; preserve explicitSessionEpoch for 401 logout handling
+        if (sessionGeneration.value === startEpoch) {
+          advanceSessionGeneration()
+          resetSessionRefs()
+        }
+        return false
+      } finally {
+        if (runtime.refreshPromise === promise) {
+          runtime.refreshPromise = null
+          runtime.refreshEpoch = -1
+          runtime.refreshTokenSnapshot = null
+        }
+      }
+    })()
+
+    runtime.refreshPromise = promise
+    runtime.refreshEpoch = startEpoch
+    runtime.refreshTokenSnapshot = currentRefreshToken
+    return await promise
   }
 
   /**
@@ -121,6 +222,9 @@ export function useAuth() {
    * 4. Create student domain profile
    */
   async function registerStudent(payload: StudentRegisterPayload): Promise<StudentProfile> {
+    const registerEpoch = beginExplicitSessionTransition()
+    resetSessionRefs()
+
     // Step 1: Register auth credentials
     await $fetch(`${baseUrl}/auth/register`, {
       method: 'POST',
@@ -131,6 +235,10 @@ export function useAuth() {
       },
     })
 
+    if (sessionGeneration.value !== registerEpoch) {
+      throw new Error('Authentication session superseded during registration')
+    }
+
     // Step 2: Login to acquire tokens
     const tokenData = await $fetch<TokenResponse>(`${baseUrl}/auth/login`, {
       method: 'POST',
@@ -139,6 +247,10 @@ export function useAuth() {
         password: payload.password,
       },
     })
+
+    if (sessionGeneration.value !== registerEpoch) {
+      throw new Error('Authentication session superseded during registration')
+    }
 
     accessToken.value = tokenData.access_token
     refreshToken.value = tokenData.refresh_token
@@ -152,6 +264,9 @@ export function useAuth() {
         policy_version: 'v1.0-2026',
       },
     })
+    if (sessionGeneration.value !== registerEpoch) {
+      throw new Error('Authentication session superseded during consent registration')
+    }
     consent.value = consentData
 
     // Step 4: Create Student Domain Profile
@@ -171,6 +286,10 @@ export function useAuth() {
       },
     })
 
+    if (sessionGeneration.value !== registerEpoch) {
+      throw new Error('Authentication session superseded during profile creation')
+    }
+
     studentProfile.value = profile
     return profile
   }
@@ -183,6 +302,9 @@ export function useAuth() {
    * 4. Create company domain profile
    */
   async function registerCompany(payload: CompanyRegisterPayload): Promise<CompanyProfile> {
+    const registerEpoch = beginExplicitSessionTransition()
+    resetSessionRefs()
+
     // Step 1: Register auth credentials
     await $fetch(`${baseUrl}/auth/register`, {
       method: 'POST',
@@ -193,6 +315,10 @@ export function useAuth() {
       },
     })
 
+    if (sessionGeneration.value !== registerEpoch) {
+      throw new Error('Authentication session superseded during registration')
+    }
+
     // Step 2: Login to acquire tokens
     const tokenData = await $fetch<TokenResponse>(`${baseUrl}/auth/login`, {
       method: 'POST',
@@ -201,6 +327,10 @@ export function useAuth() {
         password: payload.password,
       },
     })
+
+    if (sessionGeneration.value !== registerEpoch) {
+      throw new Error('Authentication session superseded during registration')
+    }
 
     accessToken.value = tokenData.access_token
     refreshToken.value = tokenData.refresh_token
@@ -214,6 +344,9 @@ export function useAuth() {
         policy_version: 'v1.0-2026',
       },
     })
+    if (sessionGeneration.value !== registerEpoch) {
+      throw new Error('Authentication session superseded during consent registration')
+    }
     consent.value = consentData
 
     // Step 4: Create Company Domain Profile
@@ -232,6 +365,10 @@ export function useAuth() {
       },
     })
 
+    if (sessionGeneration.value !== registerEpoch) {
+      throw new Error('Authentication session superseded during profile creation')
+    }
+
     companyProfile.value = profile
     return profile
   }
@@ -240,12 +377,20 @@ export function useAuth() {
    * Fetch Habeas Data consent status for current user
    */
   async function fetchConsent(): Promise<DataConsent | null> {
+    const startEpoch = sessionGeneration.value
+    const startUserId = user.value?.id ?? null
+
     try {
       const data = await apiFetch<DataConsent>('/profiles/consent/me')
+      if (sessionGeneration.value !== startEpoch || (user.value?.id ?? null) !== startUserId) {
+        return null
+      }
       consent.value = data
       return data
     } catch {
-      consent.value = null
+      if (sessionGeneration.value === startEpoch && (user.value?.id ?? null) === startUserId) {
+        consent.value = null
+      }
       return null
     }
   }
@@ -254,16 +399,25 @@ export function useAuth() {
    * Fetch domain profile for current role
    */
   async function fetchProfile(): Promise<StudentProfile | CompanyProfile | null> {
-    if (!userRole.value) return null
+    const startRole = userRole.value
+    const startUserId = user.value?.id ?? null
+    const startEpoch = sessionGeneration.value
+    if (!startRole) return null
 
     try {
-      if (userRole.value === 'STUDENT') {
+      if (startRole === 'STUDENT') {
         const student = await apiFetch<StudentProfile>('/profiles/students/me')
+        if (sessionGeneration.value !== startEpoch || (user.value?.id ?? null) !== startUserId) {
+          return null
+        }
         studentProfile.value = student
         return student
       }
-      if (userRole.value === 'COMPANY') {
+      if (startRole === 'COMPANY') {
         const company = await apiFetch<CompanyProfile>('/profiles/companies/me')
+        if (sessionGeneration.value !== startEpoch || (user.value?.id ?? null) !== startUserId) {
+          return null
+        }
         companyProfile.value = company
         return company
       }
@@ -274,7 +428,7 @@ export function useAuth() {
   }
 
   /**
-   * Initialize session on client reload if a refresh token cookie exists
+   * Initialize session on client reload if a refresh token cookie exists (single-flight & epoch-guarded per Nuxt context)
    */
   async function initSession(): Promise<boolean> {
     if (!refreshToken.value) {
@@ -285,36 +439,51 @@ export function useAuth() {
       return true
     }
 
-    isInitializing.value = true
-    try {
-      const success = await refreshTokens()
-      if (success) {
-        await Promise.allSettled([fetchConsent(), fetchProfile()])
-      }
-      return success
-    } finally {
-      isInitializing.value = false
+    const startEpoch = sessionGeneration.value
+    if (runtime.initPromise && runtime.initEpoch === startEpoch) {
+      return await runtime.initPromise
     }
+
+    isInitializing.value = true
+    let promise: Promise<boolean> | null = null
+    promise = (async () => {
+      try {
+        const success = await refreshTokens()
+        if (success && sessionGeneration.value === startEpoch) {
+          await Promise.allSettled([fetchConsent(), fetchProfile()])
+        }
+        return success && sessionGeneration.value === startEpoch
+      } finally {
+        if (sessionGeneration.value === startEpoch) {
+          isInitializing.value = false
+        }
+        if (runtime.initPromise === promise) {
+          runtime.initPromise = null
+          runtime.initEpoch = -1
+        }
+      }
+    })()
+
+    runtime.initPromise = promise
+    runtime.initEpoch = startEpoch
+    return await promise
   }
 
   /**
    * Clear local session tokens and reactive variables
    */
   function clearSession() {
-    accessToken.value = null
-    refreshToken.value = null
-    user.value = null
-    studentProfile.value = null
-    companyProfile.value = null
-    consent.value = null
+    beginExplicitSessionTransition()
+    resetSessionRefs()
   }
 
   /**
-   * Log out session, notify backend and navigate to login
+   * Log out session, notify backend and navigate to login unless superseded by a new session
    */
   async function logout() {
     const currentRefresh = refreshToken.value
-    clearSession()
+    const logoutEpoch = beginExplicitSessionTransition()
+    resetSessionRefs()
 
     if (currentRefresh) {
       try {
@@ -327,7 +496,9 @@ export function useAuth() {
       }
     }
 
-    await navigateTo('/auth/login')
+    if (sessionGeneration.value === logoutEpoch) {
+      await navigateTo('/auth/login')
+    }
   }
 
   /**
@@ -339,11 +510,15 @@ export function useAuth() {
     interest_areas?: string[]
     bio?: string
   }): Promise<StudentProfile> {
+    const startEpoch = sessionGeneration.value
+    const startUserId = user.value?.id ?? null
     const updated = await apiFetch<StudentProfile>('/profiles/students/me', {
       method: 'PATCH',
       body: data,
     })
-    studentProfile.value = updated
+    if (sessionGeneration.value === startEpoch && (user.value?.id ?? null) === startUserId) {
+      studentProfile.value = updated
+    }
     return updated
   }
 
@@ -359,11 +534,15 @@ export function useAuth() {
     contact_email?: string
     contact_phone?: string
   }): Promise<CompanyProfile> {
+    const startEpoch = sessionGeneration.value
+    const startUserId = user.value?.id ?? null
     const updated = await apiFetch<CompanyProfile>('/profiles/companies/me', {
       method: 'PATCH',
       body: data,
     })
-    companyProfile.value = updated
+    if (sessionGeneration.value === startEpoch && (user.value?.id ?? null) === startUserId) {
+      companyProfile.value = updated
+    }
     return updated
   }
 
@@ -378,6 +557,9 @@ export function useAuth() {
     contact_phone?: string
     bio?: string
   }): Promise<StudentProfile> {
+    const startEpoch = sessionGeneration.value
+    const startUserId = user.value?.id ?? null
+
     if (!consent.value?.is_accepted) {
       const consentData = await apiFetch<DataConsent>('/profiles/consent', {
         method: 'POST',
@@ -386,6 +568,9 @@ export function useAuth() {
           policy_version: 'v1.0-2026',
         },
       })
+      if (sessionGeneration.value !== startEpoch || (user.value?.id ?? null) !== startUserId) {
+        throw new Error('Authentication session superseded during consent registration')
+      }
       consent.value = consentData
     }
 
@@ -404,6 +589,9 @@ export function useAuth() {
         contact_phone: data.contact_phone?.trim() || null,
       },
     })
+    if (sessionGeneration.value !== startEpoch || (user.value?.id ?? null) !== startUserId) {
+      throw new Error('Authentication session superseded during profile creation')
+    }
     studentProfile.value = profile
     return profile
   }
@@ -418,6 +606,9 @@ export function useAuth() {
     contact_name: string
     contact_phone: string
   }): Promise<CompanyProfile> {
+    const startEpoch = sessionGeneration.value
+    const startUserId = user.value?.id ?? null
+
     if (!consent.value?.is_accepted) {
       const consentData = await apiFetch<DataConsent>('/profiles/consent', {
         method: 'POST',
@@ -426,6 +617,9 @@ export function useAuth() {
           policy_version: 'v1.0-2026',
         },
       })
+      if (sessionGeneration.value !== startEpoch || (user.value?.id ?? null) !== startUserId) {
+        throw new Error('Authentication session superseded during consent registration')
+      }
       consent.value = consentData
     }
 
@@ -440,6 +634,9 @@ export function useAuth() {
         contact_phone: data.contact_phone.trim(),
       },
     })
+    if (sessionGeneration.value !== startEpoch || (user.value?.id ?? null) !== startUserId) {
+      throw new Error('Authentication session superseded during profile creation')
+    }
     companyProfile.value = profile
     return profile
   }
@@ -455,6 +652,7 @@ export function useAuth() {
     userRole,
     activeProfile,
     isInitializing,
+    sessionGeneration,
     login,
     registerStudent,
     registerCompany,

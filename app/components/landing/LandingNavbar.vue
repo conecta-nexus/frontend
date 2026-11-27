@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
+import NotificationBell from '~/components/notifications/NotificationBell.vue'
 
 const colorMode = useColorMode()
 
@@ -15,7 +16,15 @@ function toggleTheme() {
 }
 
 const route = useRoute()
-const { isAuthenticated } = useAuth()
+const { isAuthenticated, accessToken, refreshToken, user, isInitializing, initSession } = useAuth()
+
+const hasAuthenticatedSession = computed(() => Boolean(accessToken.value && user.value?.id))
+
+onMounted(() => {
+  if (refreshToken.value && (!accessToken.value || !user.value?.id) && !isInitializing.value) {
+    void initSession()
+  }
+})
 
 const navLinks = [
   { name: 'Inicio', href: '/' },
@@ -36,21 +45,21 @@ const authCta = computed(() => {
 </script>
 
 <template>
-  <header class="w-full pt-4 md:pt-6 px-4 sm:px-6 lg:px-8">
+  <header class="w-full pt-4 md:pt-6 px-3 sm:px-6 lg:px-8">
     <!-- Floating Horizontal Bar with Modern Rounded Corners -->
     <nav
-      class="mx-auto max-w-[1480px] w-full bg-surface border-2 border-neutral-900 dark:border-neutral-700 rounded-2xl sm:rounded-3xl px-6 sm:px-10 lg:px-12 py-3 sm:py-3.5 shadow-sm flex items-center justify-between transition-all duration-200"
+      class="mx-auto max-w-[1480px] w-full bg-surface border-2 border-neutral-900 dark:border-neutral-700 rounded-2xl sm:rounded-3xl px-3 sm:px-8 lg:px-12 py-2.5 sm:py-3.5 shadow-sm flex items-center justify-between gap-2 transition-all duration-200"
       aria-label="Navegación principal"
     >
       <!-- Big Bold Logo / Brand -->
       <NuxtLink
         to="/"
-        class="flex items-center gap-2 group rounded-xl whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-institutional-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-neutral-900"
+        class="flex min-w-0 items-center gap-1.5 sm:gap-2 group rounded-xl whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-institutional-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-neutral-900"
       >
-        <span class="text-2xl sm:text-3xl lg:text-4xl font-black tracking-tight text-text-main">
+        <span class="text-base sm:text-3xl lg:text-4xl font-black tracking-tight text-text-main">
           Conecta <span class="text-institutional-500">Nexus</span>
         </span>
-        <span class="inline-block w-3 h-3 sm:w-3.5 sm:h-3.5 rounded-full bg-institutional-500 group-hover:scale-125 transition-transform" />
+        <span class="inline-block w-2 h-2 sm:w-3.5 sm:h-3.5 shrink-0 rounded-full bg-institutional-500 group-hover:scale-125 transition-transform" />
       </NuxtLink>
 
       <!-- Center Links / Tabs in Spanish -->
@@ -65,21 +74,24 @@ const authCta = computed(() => {
         </NuxtLink>
       </div>
 
-      <!-- Right Action Controls (Auth Button + Theme Toggle + Portal UFPS) -->
-      <div class="flex items-center gap-3 sm:gap-4">
+      <!-- Right Action Controls (Auth Button + Notifications + Theme Toggle + Portal UFPS) -->
+      <div class="flex items-center gap-1.5 sm:gap-3.5 shrink-0">
         <!-- Botón de Ingreso / Registro al Sistema -->
         <NuxtLink
           :to="authCta.href"
-          class="hidden sm:inline-flex items-center gap-2 px-6 py-2.5 rounded-2xl bg-institutional-500 hover:bg-institutional-600 active:scale-95 text-white text-sm font-black border-2 border-neutral-900 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[1px] hover:translate-y-[1px] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-institutional-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-neutral-900"
+          class="hidden sm:inline-flex items-center gap-2 px-5 py-2.5 rounded-2xl bg-institutional-500 hover:bg-institutional-600 active:scale-95 text-white text-sm font-black border-2 border-neutral-900 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:shadow-none hover:translate-x-[1px] hover:translate-y-[1px] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-institutional-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-neutral-900"
         >
           <span>{{ authCta.name }}</span>
         </NuxtLink>
+
+        <!-- Centro de Notificaciones para usuarios con sesión activa -->
+        <NotificationBell v-if="hasAuthenticatedSession" />
 
         <!-- Theme Toggle (Claro / Oscuro) sincronizado con useColorMode -->
         <ClientOnly>
           <button
             type="button"
-            class="w-12 h-12 sm:w-13 sm:h-13 rounded-2xl border-2 border-neutral-900 dark:border-neutral-700 flex items-center justify-center text-text-main hover:bg-pastel-coral/30 dark:hover:bg-pastel-blue/20 transition-all hover:scale-105 active:scale-95 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-institutional-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-neutral-900"
+            class="w-9 h-9 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl border-2 border-neutral-900 dark:border-neutral-700 flex items-center justify-center text-text-main hover:bg-pastel-coral/30 dark:hover:bg-pastel-blue/20 transition-all hover:scale-105 active:scale-95 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-institutional-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-neutral-900"
             :title="isDark ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'"
             :aria-label="isDark ? 'Cambiar a modo claro' : 'Cambiar a modo oscuro'"
             @click="toggleTheme"
@@ -106,8 +118,8 @@ const authCta = computed(() => {
             </svg>
           </button>
           <template #fallback>
-            <div class="w-12 h-12 sm:w-13 sm:h-13 rounded-2xl border-2 border-neutral-900 dark:border-neutral-700 flex items-center justify-center">
-              <svg class="w-5 h-5 sm:w-6 sm:h-6 text-neutral-800" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <div class="w-9 h-9 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl border-2 border-neutral-900 dark:border-neutral-700 flex items-center justify-center">
+              <svg class="w-4 h-4 sm:w-6 sm:h-6 text-neutral-800" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
               </svg>
             </div>
@@ -119,7 +131,7 @@ const authCta = computed(() => {
           href="https://ufps.edu.co"
           target="_blank"
           rel="noopener noreferrer"
-          class="w-12 h-12 sm:w-13 sm:h-13 rounded-2xl border-2 border-neutral-900 dark:border-neutral-700 flex items-center justify-center text-text-main hover:bg-pastel-coral/30 dark:hover:bg-pastel-blue/20 transition-all hover:scale-105 active:scale-95 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-institutional-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-neutral-900"
+          class="w-9 h-9 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl border-2 border-neutral-900 dark:border-neutral-700 flex items-center justify-center text-text-main hover:bg-pastel-coral/30 dark:hover:bg-pastel-blue/20 transition-all hover:scale-105 active:scale-95 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-institutional-500 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-neutral-900"
           title="Portal Institucional UFPS"
           aria-label="Portal Institucional UFPS"
         >
