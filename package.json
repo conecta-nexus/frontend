@@ -31,6 +31,7 @@
     "@tiptap/starter-kit": "^3.32.0",
     "@tiptap/suggestion": "^3.32.0",
     "@tiptap/vue-3": "^3.32.0",
+    "ultrahtml": "1.7.0",
     "vue": "^3.5.43",
     "vue-router": "^5.4.0"
   },

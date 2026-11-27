@@ -17,8 +17,12 @@ type PublicAttachmentResponse = Omit<ChallengeAttachment, 'challenge_id'> & {
   download_url: string
 }
 
-type PublicChallengeDetailResponse = Omit<PublicChallengeDetail, 'attachments'> & {
-  attachments: PublicAttachmentResponse[]
+type PublicChallengeDetailResponse = Omit<
+  PublicChallengeDetail, 'attachments' | 'required_skills' | 'knowledge_areas'
+> & {
+  attachments?: PublicAttachmentResponse[] | null
+  required_skills?: string[] | null
+  knowledge_areas?: string[] | null
 }
 
 export function useChallenges() {
@@ -30,6 +34,7 @@ export function useChallenges() {
   const pagination = useState<PaginatedResponse<Challenge> | null>('challenges_pagination', () => null)
   const loading = useState<boolean>('challenges_loading', () => false)
   const error = useState<string | null>('challenges_error', () => null)
+  const latestPublicDetailRequest = useState<number>('challenges_public_detail_request', () => 0)
   const catalog = useState<ChallengeCatalogResponse | null>('challenges_catalog', () => null)
   const catalogLoading = useState('challenges_catalog_loading', () => false)
   const catalogError = useState<string | null>('challenges_catalog_error', () => null)
@@ -114,29 +119,54 @@ export function useChallenges() {
   /**
    * Fetch the privacy-safe public projection for an open catalog challenge.
    */
-  async function getCatalogChallenge(id: string): Promise<PublicChallengeDetail> {
+  async function getCatalogChallenge(id: string, signal?: AbortSignal): Promise<PublicChallengeDetail> {
+    const request = ++latestPublicDetailRequest.value
     loading.value = true
     error.value = null
     try {
       const response = await apiFetch<PublicChallengeDetailResponse>(
         `/challenges/catalog/${encodeURIComponent(id)}`,
-        { method: 'GET' },
+        { method: 'GET', ...(signal ? { signal } : {}) },
       )
+      const normalizedAttachments: ChallengeAttachment[] = (response.attachments || []).map(attachment => ({
+        id: attachment.id,
+        challenge_id: attachment.challenge_id || response.id,
+        file_name: attachment.file_name,
+        file_size_bytes: attachment.file_size_bytes,
+        mime_type: attachment.mime_type,
+        download_url: attachment.download_url,
+        created_at: attachment.created_at,
+      }))
       const normalized: PublicChallengeDetail = {
-        ...response,
-        attachments: response.attachments.map(attachment => ({
-          ...attachment,
-          challenge_id: attachment.challenge_id || response.id,
-        })),
+        id: response.id,
+        company_id: response.company_id,
+        ...(typeof response.company_name === 'string' && response.company_name.trim()
+          ? { company_name: response.company_name.trim() }
+          : {}),
+        title: response.title,
+        difficulty_level: response.difficulty_level,
+        modality: response.modality,
+        min_semester: response.min_semester,
+        economic_sector: response.economic_sector,
+        required_skills: Array.isArray(response.required_skills) ? [...response.required_skills] : [],
+        knowledge_areas: Array.isArray(response.knowledge_areas) ? [...response.knowledge_areas] : [],
+        created_at: response.created_at,
+        description: response.description,
+        business_process: response.business_process,
+        status: response.status,
+        updated_at: response.updated_at,
+        attachments: normalizedAttachments,
       }
-      currentChallenge.value = normalized
+      if (!signal?.aborted && request === latestPublicDetailRequest.value) currentChallenge.value = normalized
       return normalized
     } catch (err: unknown) {
       const fetchError = err as { data?: { detail?: string }; message?: string }
-      error.value = fetchError?.data?.detail || fetchError?.message || 'Failed to fetch public challenge'
+      if (!signal?.aborted && request === latestPublicDetailRequest.value) {
+        error.value = fetchError?.data?.detail || fetchError?.message || 'Failed to fetch public challenge'
+      }
       throw err
     } finally {
-      loading.value = false
+      if (request === latestPublicDetailRequest.value) loading.value = false
     }
   }
 
