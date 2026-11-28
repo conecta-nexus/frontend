@@ -11,6 +11,7 @@ import type {
   PaginatedResponse,
   PublicChallengeDetail,
 } from '~/types/challenge'
+import { extractApiErrorMessage } from '~/utils/errors'
 
 type PublicAttachmentResponse = Omit<ChallengeAttachment, 'challenge_id'> & {
   challenge_id?: string
@@ -62,6 +63,14 @@ export function useChallenges() {
   }
 
   /**
+   * Invalidate cached public catalog listings so next read re-fetches fresh state
+   */
+  function invalidateCatalog() {
+    catalog.value = null
+    catalogError.value = null
+  }
+
+  /**
    * Create a new challenge (HU-06)
    */
   async function createChallenge(payload: ChallengeCreatePayload): Promise<Challenge> {
@@ -75,24 +84,39 @@ export function useChallenges() {
       })
       currentChallenge.value = response
       challenges.value.unshift(response)
+      if (response.status === 'OPEN') {
+        invalidateCatalog()
+      }
       return response
     } catch (err: unknown) {
-      const fetchError = err as { data?: { detail?: string }; message?: string }
-      error.value = fetchError?.data?.detail || fetchError?.message || 'Failed to create challenge'
+      error.value = extractApiErrorMessage(err, 'No se pudo crear el desafío.')
       throw err
     } finally {
       loading.value = false
     }
   }
 
+  /**
+   * Publish a draft challenge to the public catalog (HU-08)
+   */
   async function publishChallenge(id: string): Promise<Challenge> {
-    const response = await apiFetch<Challenge>(`/challenges/${encodeURIComponent(id)}/publish`, {
-      method: 'POST',
-      retry: 0,
-    })
-    currentChallenge.value = response
-    challenges.value = challenges.value.map(challenge => challenge.id === id ? response : challenge)
-    return response
+    loading.value = true
+    error.value = null
+    try {
+      const response = await apiFetch<Challenge>(`/challenges/${encodeURIComponent(id)}/publish`, {
+        method: 'POST',
+        retry: 0,
+      })
+      currentChallenge.value = response
+      challenges.value = challenges.value.map(challenge => challenge.id === id ? response : challenge)
+      invalidateCatalog()
+      return response
+    } catch (err: unknown) {
+      error.value = extractApiErrorMessage(err, 'No se pudo publicar el desafío.')
+      throw err
+    } finally {
+      loading.value = false
+    }
   }
 
   /**
@@ -108,8 +132,7 @@ export function useChallenges() {
       currentChallenge.value = response
       return response
     } catch (err: unknown) {
-      const fetchError = err as { data?: { detail?: string }; message?: string }
-      error.value = fetchError?.data?.detail || fetchError?.message || 'Failed to fetch challenge'
+      error.value = extractApiErrorMessage(err, 'No se pudo obtener el desafío.')
       throw err
     } finally {
       loading.value = false
@@ -160,9 +183,8 @@ export function useChallenges() {
       if (!signal?.aborted && request === latestPublicDetailRequest.value) currentChallenge.value = normalized
       return normalized
     } catch (err: unknown) {
-      const fetchError = err as { data?: { detail?: string }; message?: string }
       if (!signal?.aborted && request === latestPublicDetailRequest.value) {
-        error.value = fetchError?.data?.detail || fetchError?.message || 'Failed to fetch public challenge'
+        error.value = extractApiErrorMessage(err, 'No se pudo cargar el detalle público del desafío.')
       }
       throw err
     } finally {
@@ -186,10 +208,10 @@ export function useChallenges() {
       if (index !== -1) {
         challenges.value[index] = response
       }
+      invalidateCatalog()
       return response
     } catch (err: unknown) {
-      const fetchError = err as { data?: { detail?: string }; message?: string }
-      error.value = fetchError?.data?.detail || fetchError?.message || 'Failed to update challenge'
+      error.value = extractApiErrorMessage(err, 'No se pudo actualizar el desafío.')
       throw err
     } finally {
       loading.value = false
@@ -216,10 +238,10 @@ export function useChallenges() {
       if (index !== -1) {
         challenges.value[index] = response
       }
+      invalidateCatalog()
       return response
     } catch (err: unknown) {
-      const fetchError = err as { data?: { detail?: string }; message?: string }
-      error.value = fetchError?.data?.detail || fetchError?.message || 'Failed to close challenge'
+      error.value = extractApiErrorMessage(err, 'No se pudo cerrar el desafío.')
       throw err
     } finally {
       loading.value = false
@@ -248,8 +270,7 @@ export function useChallenges() {
       pagination.value = response
       return response
     } catch (err: unknown) {
-      const fetchError = err as { data?: { detail?: string }; message?: string }
-      error.value = fetchError?.data?.detail || fetchError?.message || 'Failed to fetch company challenges'
+      error.value = extractApiErrorMessage(err, 'No se pudo cargar el portafolio de desafíos.')
       throw err
     } finally {
       loading.value = false
@@ -331,8 +352,7 @@ export function useChallenges() {
 
       return response
     } catch (err: unknown) {
-      const fetchError = err as { data?: { detail?: string }; message?: string }
-      error.value = fetchError?.data?.detail || fetchError?.message || 'Failed to upload attachment'
+      error.value = extractApiErrorMessage(err, 'No se pudo subir el archivo adjunto.')
       throw err
     } finally {
       loading.value = false
@@ -356,8 +376,7 @@ export function useChallenges() {
         },
       )
     } catch (err: unknown) {
-      const fetchError = err as { data?: { detail?: string }; message?: string }
-      error.value = fetchError?.data?.detail || fetchError?.message || 'Failed to generate download URL'
+      error.value = extractApiErrorMessage(err, 'No se pudo generar el enlace de descarga.')
       throw err
     } finally {
       loading.value = false
@@ -381,8 +400,7 @@ export function useChallenges() {
         )
       }
     } catch (err: unknown) {
-      const fetchError = err as { data?: { detail?: string }; message?: string }
-      error.value = fetchError?.data?.detail || fetchError?.message || 'Failed to delete attachment'
+      error.value = extractApiErrorMessage(err, 'No se pudo eliminar el archivo adjunto.')
       throw err
     } finally {
       loading.value = false
@@ -407,6 +425,7 @@ export function useChallenges() {
     // Methods
     clearError,
     clearCurrentChallenge,
+    invalidateCatalog,
     createChallenge,
     publishChallenge,
     getChallenge,
