@@ -489,7 +489,7 @@ onBeforeUnmount(cancelPendingSearch)
       class="mt-4 pt-3 border-t border-neutral-100 dark:border-neutral-800 flex flex-col sm:flex-row items-stretch sm:items-center gap-3"
       :class="{ 'hidden sm:flex': !isMobileExpanded, 'flex': isMobileExpanded }"
     >
-      <div class="flex-1 flex items-center gap-2">
+      <div class="min-w-0 flex-1 flex flex-wrap sm:flex-nowrap items-center gap-2">
         <label
           for="catalog-skill"
           class="text-xs font-black uppercase tracking-wider text-neutral-700 dark:text-neutral-300 shrink-0"
@@ -501,12 +501,12 @@ onBeforeUnmount(cancelPendingSearch)
           v-model="skillInput"
           type="text"
           placeholder="Escribe una tecnología (ej: Python, Docker) y presiona Enter..."
-          class="flex-1 px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border-2 border-neutral-900 dark:border-neutral-700 rounded-xl font-medium text-xs text-neutral-900 dark:text-neutral-100 placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-institutional-500 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
+          class="min-w-0 flex-1 w-full sm:w-auto px-3 py-2 bg-neutral-50 dark:bg-neutral-800 border-2 border-neutral-900 dark:border-neutral-700 rounded-xl font-medium text-xs text-neutral-900 dark:text-neutral-100 placeholder-neutral-500 focus:outline-none focus:ring-2 focus:ring-institutional-500 shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
           @keydown.enter.prevent="addSkill"
         >
         <button
           type="button"
-          class="px-3 py-2 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 font-black text-xs rounded-xl shadow-[2px_2px_0px_0px_rgba(220,38,38,1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-institutional-500"
+          class="shrink-0 px-3 py-2 bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 font-black text-xs rounded-xl shadow-[2px_2px_0px_0px_rgba(220,38,38,1)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-institutional-500"
           @click="addSkill"
         >
           Agregar
