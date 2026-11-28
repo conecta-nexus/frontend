@@ -60,6 +60,7 @@ const IMPLEMENTED_EXACT_ROUTES = new Set([
   '/challenges',
   '/challenges/new',
   '/challenges/manage',
+  '/moderation',
   '/auth/login',
   '/auth/register',
 ])
